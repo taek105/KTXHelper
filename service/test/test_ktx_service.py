@@ -1,10 +1,27 @@
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 from urllib.parse import parse_qs, urlparse
 
 from selenium.webdriver.common.by import By
 
 from service import ktx
+
+
+class ChromeDriverInstallationTest(unittest.TestCase):
+    @patch.object(ktx.uc, "Patcher")
+    @patch.object(ktx, "ChromeDriverManager")
+    def test_installs_and_patches_windows_chromedriver(
+        self,
+        driver_manager,
+        patcher,
+    ):
+        driver_manager.return_value.install.return_value = "chromedriver.exe"
+
+        result = ktx.install_chromedriver()
+
+        self.assertEqual("chromedriver.exe", result)
+        patcher.assert_called_once_with(executable_path="chromedriver.exe")
+        patcher.return_value.auto.assert_called_once_with()
 
 
 class KtxSearchUrlTest(unittest.TestCase):

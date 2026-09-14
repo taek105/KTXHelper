@@ -1,6 +1,5 @@
 import random
 import re
-import subprocess
 import time
 from datetime import date
 from random import randint
@@ -160,13 +159,9 @@ KTX_STATIONS = [
 ]
 
 
-def install_arm_chromedriver():
+def install_chromedriver():
     driver_path = ChromeDriverManager().install()
     uc.Patcher(executable_path=driver_path).auto()
-    subprocess.run(
-        ["codesign", "--force", "--sign", "-", driver_path],
-        check=True,
-    )
     return driver_path
 
 
@@ -446,7 +441,7 @@ class KTX:
         self._check_login()
 
     def _run_driver(self):
-        driver_path = install_arm_chromedriver()
+        driver_path = install_chromedriver()
         try:
             self.driver = uc.Chrome(
                 driver_executable_path=driver_path,
