@@ -11,7 +11,7 @@
       <ol class="mb-0 ps-3">
         <li class="mb-2">
           <strong>로그인</strong><br>
-          코레일 회원번호·비밀번호를 입력해주세요.
+          코레일 회원번호·비밀번호를 입력하세요. 일반 Chrome 창에서 자동으로 로그인합니다.
         </li>
         <li class="mb-2">
           <strong>여정 선택</strong><br>
@@ -19,7 +19,7 @@
         </li>
         <li class="mb-2">
           <strong>스케줄 조회</strong><br>
-          “스케줄 조회” 버튼을 눌러 해당 조건의 열차 목록을 불러옵니다.
+          “스케줄 조회” 버튼을 누르면 Chrome 창에서 로그인하고 열차 목록을 불러옵니다.
         </li>
         <li class="mb-2">
           <strong>열차 선택</strong><br>
@@ -27,7 +27,7 @@
         </li>
         <li>
           <strong>매크로 실행</strong><br>
-          선택이 완료되면 “매크로 실행” 버튼을 눌러 예약을 시작합니다.
+          선택이 완료되면 “매크로 실행” 버튼을 누르세요. 새 Chrome 창에서 자동 로그인 후 예약을 시작합니다.
         </li>
       </ol>
     </div>
@@ -56,27 +56,15 @@
   </div>
   <div class="mb-3">
     <label for="loginField" class="form-label">코레일 회원번호</label>
-    <input
-      type="text"
-      id="loginField"
-      name="username"
-      autocomplete="username"
-      class="form-control"
-      required
-    />
+    <input type="text" id="loginField" name="username" autocomplete="username"
+           class="form-control" required />
   </div>
   <div class="mb-3">
     <label for="pwField" class="form-label">비밀번호</label>
-    <input
-      type="password"
-      id="pwField"
-      name="password"
-      autocomplete="current-password"
-      class="form-control"
-      required
-    />
+    <input type="password" id="pwField" name="password" autocomplete="current-password"
+           class="form-control" required />
   </div>
-    <div class="mb-3">
+  <div class="mb-3">
     <label for="fromStation" class="form-label">출발역</label>
     <select id="fromStation" name="from_station" class="form-select" required>
       <option value="" disabled selected>출발역 선택</option>
@@ -174,11 +162,10 @@
       <div class="col-md-4 mb-3">
         <h6 class="text-dark">사용 방법</h6>
         <ul class="list-unstyled">
-          <li>① 로그인 정보 입력</li>
-          <li>② 출발·도착역, 날짜·시간 선택</li>
-          <li>③ “스케줄 조회” 클릭</li>
-          <li>④ 원하는 열차 행 클릭 (파란색 강조)</li>
-          <li>⑤ “매크로 실행” 버튼 클릭</li>
+          <li>① 코레일 로그인 정보와 여정 입력</li>
+          <li>② “스케줄 조회” 클릭</li>
+          <li>③ 원하는 열차 행 클릭 (파란색 강조)</li>
+          <li>④ “매크로 실행” 클릭</li>
         </ul>
       </div>
       <div class="col-md-4 mb-3">
