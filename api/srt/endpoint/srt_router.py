@@ -141,3 +141,5 @@ def get_schedule(
         raise HTTPException(status_code=429, detail=str(exc)) from exc
     except LoginFailedError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
+    except BrowserWindowClosedError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc

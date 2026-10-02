@@ -2,8 +2,8 @@ from service.ktx import KTX, get_schedule
 
 
 def run_macro_logic(
-    login_id: str, 
-    login_psw: str, 
+    login_id: str,
+    login_psw: str,
     dpt_stn: str,
     arr_stn: str,
     dpt_dt: str,
