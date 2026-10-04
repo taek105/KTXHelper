@@ -19,5 +19,9 @@ class BrowserWindowClosedError(Exception):
     pass
 
 
+class RefreshButtonNotFoundError(Exception):
+    pass
+
+
 class KorailAccessBlockedError(Exception):
     pass

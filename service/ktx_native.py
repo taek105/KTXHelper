@@ -4,7 +4,12 @@ import random
 import time
 from datetime import date
 
-from service.exceptions import InvalidDateError, InvalidDateFormatError, LoginFailedError
+from service.exceptions import (
+    InvalidDateError,
+    InvalidDateFormatError,
+    LoginFailedError,
+    RefreshButtonNotFoundError,
+)
 from service.native_browser import (
     NativeChrome,
     StaleBrowserControlError,
@@ -22,11 +27,11 @@ MANUAL_LOGIN_WAIT_TIMEOUT = 300
 RESULT_WAIT_TIMEOUT = 120
 
 
-def _find_button(nodes, title, *, excluded_paths=()):
+def _find_button(nodes, title, *, excluded_paths=(), exact=False, roles=("AXButton",)):
     candidates = [
         node for node in nodes
-        if node["role"] == "AXButton"
-        and title in node["title"]
+        if node["role"] in roles
+        and (node["title"] == title if exact else title in node["title"])
         and node.get("enabled") != "0"
         and node["path"] not in excluded_paths
     ]
@@ -215,8 +220,17 @@ class KTX:
         return wait_for_results(self.browser, RESULT_WAIT_TIMEOUT)
 
     def _refresh_result(self):
-        time.sleep(0.8)
-        self.browser.refresh()
+        for attempt in range(4):  # Initial attempt plus up to three retries.
+            time.sleep(0.8)
+            try:
+                self.browser.refresh()
+                break
+            except RefreshButtonNotFoundError as exc:
+                if attempt == 3:
+                    raise RefreshButtonNotFoundError(
+                        "Chrome 새로고침 버튼을 4회 시도했지만 찾지 못했습니다."
+                    ) from exc
+                time.sleep(0.2)
         time.sleep(0.2)
         self.cnt_refresh += 1
         print(f"새로고침 {self.cnt_refresh}회")
@@ -224,6 +238,7 @@ class KTX:
 
     def _wait_for_button(
         self, title, excluded_paths=(), timeout=15, success_path=None,
+        exact=False, roles=("AXButton",),
     ):
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
@@ -231,7 +246,10 @@ class KTX:
             page_state(nodes)
             if success_path and success_path in address(nodes):
                 return None
-            button = _find_button(nodes, title, excluded_paths=excluded_paths)
+            button = _find_button(
+                nodes, title, excluded_paths=excluded_paths, exact=exact,
+                roles=roles,
+            )
             if button:
                 return button
             time.sleep(random.uniform(0.05, 0.1))
@@ -268,7 +286,11 @@ class KTX:
             return True
         self.browser.click(button, fast=True)
         if waiting:
-            confirmation = self._wait_for_button("대기신청", timeout=20)
+            # Match the final "대기신청" button exactly so the previous
+            # "예약대기신청" button cannot be selected again.
+            confirmation = self._wait_for_button(
+                "대기신청", timeout=20, exact=True, roles=("AXButton", "AXLink"),
+            )
             self.browser.click(confirmation, fast=True)
         else:
             # Some trains show an information notice before the detail page.

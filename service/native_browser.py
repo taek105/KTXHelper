@@ -13,7 +13,11 @@ import threading
 import time
 from pathlib import Path
 
-from service.exceptions import BrowserWindowClosedError, KorailAccessBlockedError
+from service.exceptions import (
+    BrowserWindowClosedError,
+    KorailAccessBlockedError,
+    RefreshButtonNotFoundError,
+)
 
 BRIDGE = Path(__file__).with_suffix(".swift")
 CHROME = Path("/Applications/Google Chrome.app/Contents/MacOS/Google Chrome")
@@ -118,6 +122,8 @@ class NativeChrome:
                 )
             if result.returncode in (5, 6):
                 raise StaleBrowserControlError("브라우저 입력칸이 다시 그려졌습니다.")
+            if action == "refresh" and "Chrome refresh button not found" in message:
+                raise RefreshButtonNotFoundError("Chrome 새로고침 버튼을 찾지 못했습니다.")
             raise RuntimeError(f"Chrome 조작 실패: {message or action}")
         return result.stdout
 

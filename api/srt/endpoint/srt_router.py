@@ -14,6 +14,7 @@ from service.exceptions import (
     InvalidTimeFormatError,
     KorailAccessBlockedError,
     LoginFailedError,
+    RefreshButtonNotFoundError,
 )
 
 router = APIRouter()
@@ -55,6 +56,9 @@ def post_run(
     except BrowserWindowClosedError as exc:
         _log_macro_failure("BROWSER_CLOSED", str(exc), started_at)
         raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except RefreshButtonNotFoundError as exc:
+        _log_macro_failure("REFRESH_BUTTON_NOT_FOUND", str(exc), started_at)
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
     except KorailAccessBlockedError as exc:
         _log_macro_failure("KORAIL_ACCESS_BLOCKED", str(exc), started_at)
         raise HTTPException(status_code=429, detail=str(exc)) from exc
