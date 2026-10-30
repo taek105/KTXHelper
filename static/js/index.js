@@ -70,6 +70,7 @@ function applyHistory(item) {
   document.getElementById("time").value = item.time;
   document.getElementById("fromStation").value = item.from_station;
   document.getElementById("toStation").value = item.to_station;
+  clearSchedule();
 }
 
 function renderHistoryButtons() {
@@ -169,9 +170,19 @@ fetchBtn.addEventListener("click", async () => {
   }
 });
 
+// 조회 조건이 바뀌면 이전 조회의 열차를 새 조건으로 실행하지 않도록 결과를 지운다.
+function clearSchedule() {
+  container.innerHTML = "";
+  runBtn.disabled = true;
+}
+
+["dateDropdown", "time", "fromStation", "toStation"].forEach(id => {
+  document.getElementById(id).addEventListener("change", clearSchedule);
+});
+
 // 좌석 고르기 렌더링
 function renderSchedule(data) {
-  container.innerHTML = "";
+  clearSchedule();
   const table = document.createElement("table");
   table.className = "table table-bordered text-center";
 
@@ -189,7 +200,7 @@ function renderSchedule(data) {
 
     const chk = document.createElement("input");
     chk.type = "checkbox";
-    chk.name = "seats";
+    chk.name = "trains";
     chk.value = item.train;
     chk.style.display = "none";
 
@@ -217,7 +228,7 @@ function renderSchedule(data) {
       chk.checked = !chk.checked;
       tr.classList.toggle("table-primary", chk.checked);
 
-      const any = Array.from(container.querySelectorAll('input[name="seats"]'))
+      const any = Array.from(container.querySelectorAll('input[name="trains"]'))
                        .some(c=>c.checked);
 
       if (any) {
@@ -272,11 +283,10 @@ async function runMacro() {
   const date = document.getElementById('dateDropdown').value;
   const time = document.getElementById('time').value;
   const reserve = reserveSwitch.checked;
-  const seatsEls = Array.from(document.querySelectorAll('input[name="seats"]:checked'));
-  const allSeats = Array.from(document.querySelectorAll('input[name="seats"]'));
-  const seats = seatsEls.map(el => allSeats.indexOf(el) + 1);
+  const trains = Array.from(container.querySelectorAll('input[name="trains"]:checked'))
+    .map(el => el.value);
 
-  if (![login_id, login_psw, from_stn, to_stn, date, time].every(Boolean) || seats.length === 0) {
+  if (![login_id, login_psw, from_stn, to_stn, date, time].every(Boolean) || trains.length === 0) {
     return alert('모든 필드를 채우고 열차를 최소 하나 선택하세요.');
   }
 
@@ -288,7 +298,7 @@ async function runMacro() {
   params.append('date', date);
   params.append('time', time);
   params.append('reserve', reserve);
-  seats.forEach(s => params.append('seats', s));
+  trains.forEach(train => params.append('trains', train));
 
   try {
     const res = await fetch('/run', {
@@ -306,17 +316,12 @@ async function runMacro() {
       throw new Error(message);
     }
 
-    const success = await res.json();
-    if (success) {
-      triggerAlarmPopup({
-        title: '🚀 예매 알림',
-        messages: [
-          '코레일에 표시된 결제기한 내에 결제하셔야 예매가 확정됩니다.'
-        ]
-      });
-    } else {
-      alert('예약에 실패했습니다.');
-    }
+    triggerAlarmPopup({
+      title: '🚀 예매 알림',
+      messages: [
+        '코레일에 표시된 결제기한 내에 결제하셔야 예매가 확정됩니다.'
+      ]
+    });
   } catch (err) {
     alert('매크로 실행 중 오류: ' + err.message);
   }

@@ -4,22 +4,64 @@ from unittest.mock import patch
 from fastapi import HTTPException
 
 from api.srt.endpoint import srt_router
-from service.exceptions import BrowserWindowClosedError, KorailAccessBlockedError
+from service.exceptions import (
+    BrowserControlError,
+    BrowserSetupError,
+    BrowserWindowClosedError,
+    KorailAccessBlockedError,
+)
+
+RUN_FORM = dict(
+    login_id=None, login_psw=None, from_station="서울", to_station="부산",
+    date="20261003", time="08", reserve=False, trains=[121],
+)
+SCHEDULE_FORM = dict(
+    login_id=None, login_psw=None, date="20261003", time="08",
+    from_station="서울", to_station="부산",
+)
 
 
 class BrowserWindowApiTest(unittest.TestCase):
+    @patch.object(srt_router, "notify_macro_failure")
     @patch.object(
         srt_router,
         "run_macro_logic",
         side_effect=BrowserWindowClosedError("브라우저 창이 닫혔습니다."),
     )
-    def test_post_run_returns_conflict_for_closed_browser(self, _run_macro):
+    def test_post_run_returns_conflict_for_closed_browser(self, _run_macro, notify):
         with self.assertRaises(HTTPException) as raised:
-            srt_router.post_run(
-                login_id=None, login_psw=None, from_station="서울", to_station="부산",
-                date="20261003", time="08", reserve=False, seats=[1],
-            )
+            srt_router.post_run(**RUN_FORM)
         self.assertEqual(409, raised.exception.status_code)
+        notify.assert_not_called()
+
+    @patch.object(srt_router, "notify_macro_failure")
+    @patch.object(
+        srt_router,
+        "run_macro_logic",
+        side_effect=BrowserControlError("Chrome 조작 실패: Code=11"),
+    )
+    def test_post_run_notifies_when_macro_stops(self, _run_macro, notify):
+        with self.assertRaises(HTTPException) as raised:
+            srt_router.post_run(**RUN_FORM)
+        self.assertEqual(502, raised.exception.status_code)
+        notify.assert_called_once()
+        self.assertEqual("Chrome 조작 실패: Code=11", notify.call_args.kwargs["reason"])
+
+    @patch.object(srt_router, "notify_macro_failure")
+    @patch.object(srt_router, "run_macro_logic")
+    def test_post_run_rejects_requests_without_trains(self, run_macro, notify):
+        with self.assertRaises(HTTPException) as raised:
+            srt_router.post_run(**{**RUN_FORM, "trains": []})
+        self.assertEqual(422, raised.exception.status_code)
+        run_macro.assert_not_called()
+        notify.assert_not_called()
+
+    @patch.object(srt_router, "notify_macro_failure")
+    @patch.object(srt_router, "run_macro_logic", side_effect=ValueError("internal detail"))
+    def test_post_run_notifies_without_internal_details(self, _run_macro, notify):
+        with self.assertRaises(ValueError):
+            srt_router.post_run(**RUN_FORM)
+        self.assertNotIn("internal detail", notify.call_args.kwargs["reason"])
 
     @patch.object(
         srt_router,
@@ -28,11 +70,24 @@ class BrowserWindowApiTest(unittest.TestCase):
     )
     def test_get_schedule_reports_access_block(self, _get_schedule):
         with self.assertRaises(HTTPException) as raised:
-            srt_router.get_schedule(
-                login_id=None, login_psw=None, date="20261003", time="08",
-                from_station="서울", to_station="부산",
-            )
+            srt_router.get_schedule(**SCHEDULE_FORM)
         self.assertEqual(429, raised.exception.status_code)
+
+    def test_get_schedule_explains_setup_and_timeout_errors(self):
+        for error, status_code in (
+            (BrowserSetupError("손쉬운 사용에서 이 앱의 제어 권한을 켜주세요."), 503),
+            (TimeoutError("Chrome 창이 열리지 않았습니다."), 504),
+            (BrowserControlError("Chrome 조작 실패: Code=11"), 502),
+        ):
+            with self.subTest(error=type(error).__name__), \
+                    patch.object(srt_router, "run_get_schedule", side_effect=error), \
+                    patch.object(srt_router, "log_event") as log_event:
+                with self.assertRaises(HTTPException) as raised:
+                    srt_router.get_schedule(**SCHEDULE_FORM)
+                self.assertEqual(status_code, raised.exception.status_code)
+                self.assertEqual(str(error), raised.exception.detail)
+                self.assertEqual("SCHEDULE_FAILED", log_event.call_args.args[0])
+                self.assertEqual(str(error), log_event.call_args.kwargs["failure_reason"])
 
 
 if __name__ == "__main__":

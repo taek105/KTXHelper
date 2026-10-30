@@ -7,7 +7,7 @@ import Foundation
 //actions are macOS mouse/keyboard events or accessibility presses.
 let arguments = CommandLine.arguments
 guard arguments.count >= 3, let processID = Int32(arguments[2]) else {
-    fputs("usage: native_browser <snapshot|navigate|refresh|press|click|type|close> <pid> [argument]\n", stderr)
+    fputs("usage: native_browser <snapshot|navigate|refresh|click|type|close> <pid> [argument]\n", stderr)
     exit(2)
 }
 guard AXIsProcessTrusted() else {
@@ -20,11 +20,20 @@ guard let runningApp = NSRunningApplication(processIdentifier: processID) else {
 }
 let app = AXUIElementCreateApplication(pid_t(processID))
 
+func stringValue(_ raw: CFTypeRef?) -> String {
+    guard let raw, CFGetTypeID(raw) != AXUIElementGetTypeID(),
+          CFGetTypeID(raw) != CFNullGetTypeID() else { return "" }
+    // Batched reads report a missing attribute as an error value in the result.
+    if CFGetTypeID(raw) == AXValueGetTypeID(), AXValueGetType(raw as! AXValue) == .axError {
+        return ""
+    }
+    return "\(raw)"
+}
+
 func attribute(_ element: AXUIElement, _ name: String) -> String {
     var raw: CFTypeRef?
-    guard AXUIElementCopyAttributeValue(element, name as CFString, &raw) == .success,
-          let raw, CFGetTypeID(raw) != AXUIElementGetTypeID() else { return "" }
-    return "\(raw)"
+    guard AXUIElementCopyAttributeValue(element, name as CFString, &raw) == .success else { return "" }
+    return stringValue(raw)
 }
 
 func children(_ element: AXUIElement) -> [AXUIElement] {
@@ -48,31 +57,45 @@ func firstWindow() -> AXUIElement? {
     return (raw as? [AXUIElement])?.first
 }
 
+func isChromeFrontmost() -> Bool {
+    var raw: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(app, kAXFrontmostAttribute as CFString, &raw) == .success,
+          let raw, CFGetTypeID(raw) == CFBooleanGetTypeID() else { return false }
+    return CFBooleanGetValue((raw as! CFBoolean))
+}
+
 func activate(fast: Bool = false) throws {
     guard let window = firstWindow() else { throw NSError(domain: "Chrome window closed", code: 4) }
     _ = runningApp.activate(options: [])
     _ = AXUIElementPerformAction(window, kAXRaiseAction as CFString)
-    if fast {
-        let deadline = Date().addingTimeInterval(1.5)
-        var lastAttempt = Date()
-        while NSWorkspace.shared.frontmostApplication?.processIdentifier != processID {
-            guard Date() < deadline else {
-                throw NSError(domain: "Chrome window did not become active", code: 11)
-            }
-            if Date().timeIntervalSince(lastAttempt) >= 0.2 {
-                _ = runningApp.activate(options: [])
-                _ = AXUIElementPerformAction(window, kAXRaiseAction as CFString)
-                lastAttempt = Date()
-            }
-            Thread.sleep(forTimeInterval: 0.02)
+    let deadline = Date().addingTimeInterval(fast ? 1.5 : 3)
+    var lastAttempt = Date()
+    while !isChromeFrontmost() {
+        guard Date() < deadline else {
+            throw NSError(domain: "Chrome window did not become active", code: 11)
         }
-    } else {
-        Thread.sleep(forTimeInterval: 0.2)
+        if Date().timeIntervalSince(lastAttempt) >= 0.2 {
+            _ = runningApp.activate(options: [])
+            // macOS 14+ may ignore activation requests from background processes.
+            _ = AXUIElementSetAttributeValue(app, kAXFrontmostAttribute as CFString, kCFBooleanTrue)
+            _ = AXUIElementPerformAction(window, kAXRaiseAction as CFString)
+            lastAttempt = Date()
+        }
+        Thread.sleep(forTimeInterval: 0.02)
+    }
+    if !fast { Thread.sleep(forTimeInterval: 0.2) }
+}
+
+// Keyboard events go to the frontmost app. Stop rather than type into another app.
+func requireFrontmost() throws {
+    guard isChromeFrontmost() else {
+        throw NSError(domain: "Chrome lost focus before keyboard input", code: 15)
     }
 }
 
 func key(_ code: CGKeyCode, command: Bool = false, shift: Bool = false,
-         pause: TimeInterval = 0.1) {
+         pause: TimeInterval = 0.1) throws {
+    try requireFrontmost()
     var flags: CGEventFlags = []
     if command { flags.insert(.maskCommand) }
     if shift { flags.insert(.maskShift) }
@@ -85,7 +108,7 @@ func key(_ code: CGKeyCode, command: Bool = false, shift: Bool = false,
     Thread.sleep(forTimeInterval: pause)
 }
 
-func typeText(_ text: String, careful: Bool = false) throws {
+func typeText(_ text: String) throws {
     // Virtual key codes are US keyboard positions. Select an ASCII layout so
     // the user's Korean input mode cannot change the entered credentials.
     let originalSource = TISCopyCurrentKeyboardInputSource().takeRetainedValue()
@@ -111,15 +134,14 @@ func typeText(_ text: String, careful: Bool = false) throws {
     ]
     for character in text {
         if let index = base.firstIndex(of: character) {
-            key(codes[index], pause: careful ? 0.1 : 0.035)
-            if careful { Thread.sleep(forTimeInterval: Double.random(in: 0.05...0.16)) }
+            try key(codes[index], pause: 0.035)
             continue
         }
         if let index = shifted.firstIndex(of: character) {
-            key(codes[index], shift: true, pause: careful ? 0.1 : 0.035)
-            if careful { Thread.sleep(forTimeInterval: Double.random(in: 0.05...0.16)) }
+            try key(codes[index], shift: true, pause: 0.035)
             continue
         }
+        try requireFrontmost()
         let units = Array(String(character).utf16)
         units.withUnsafeBufferPointer { buffer in
             guard let pointer = buffer.baseAddress else { return }
@@ -130,7 +152,7 @@ func typeText(_ text: String, careful: Bool = false) throws {
                 }
             }
         }
-        Thread.sleep(forTimeInterval: careful ? 0.1 : 0.035)
+        Thread.sleep(forTimeInterval: 0.035)
     }
 }
 
@@ -147,11 +169,18 @@ func pasteText(_ text: String) throws {
         board.clearContents()
         if !saved.isEmpty { _ = board.writeObjects(saved) }
     }
-    board.clearContents()
-    guard board.setString(text, forType: .string) else {
+    let item = NSPasteboardItem()
+    _ = item.setString(text, forType: .string)
+    // nspasteboard.org markers ask clipboard managers not to record the password.
+    for marker in ["org.nspasteboard.ConcealedType", "org.nspasteboard.TransientType"] {
+        _ = item.setData(Data(), forType: NSPasteboard.PasteboardType(marker))
+    }
+    // currentHostOnly keeps it off Universal Clipboard on nearby devices.
+    _ = board.prepareForNewContents(with: .currentHostOnly)
+    guard board.writeObjects([item]), board.string(forType: .string) == text else {
         throw NSError(domain: "Could not write password to clipboard", code: 13)
     }
-    key(9, command: true) // Command-V
+    try key(9, command: true) // Command-V
     Thread.sleep(forTimeInterval: 0.1)
 }
 
@@ -190,21 +219,29 @@ func isFocused(_ target: AXUIElement) -> Bool {
     return CFBooleanGetValue(raw as! CFBoolean)
 }
 
+// Read all snapshot fields with one accessibility request per node.
+let snapshotAttributes = [
+    kAXRoleAttribute, kAXTitleAttribute, kAXDescriptionAttribute,
+    kAXEnabledAttribute, kAXValueAttribute, kAXChildrenAttribute,
+] as CFArray
+
 func snapshot() throws {
     guard let window = firstWindow() else { throw NSError(domain: "Chrome window closed", code: 4) }
     var nodes: [[String: Any]] = []
     func walk(_ element: AXUIElement, _ path: String, _ depth: Int) {
         guard depth < 40, nodes.count < 4000 else { return }
-        let role = attribute(element, kAXRoleAttribute)
-        let title = attribute(element, kAXTitleAttribute)
-        let description = attribute(element, kAXDescriptionAttribute)
-        let enabled = attribute(element, kAXEnabledAttribute)
+        var raw: CFArray?
+        let values = AXUIElementCopyMultipleAttributeValues(element, snapshotAttributes, [], &raw) == .success
+            ? (raw as? [CFTypeRef] ?? []) : []
+        func field(_ index: Int) -> CFTypeRef? { values.indices.contains(index) ? values[index] : nil }
+        let role = stringValue(field(0))
+        let title = stringValue(field(1))
         let value = role == "AXTextField" && title != "주소창 및 검색창" || role == "AXSecureTextField"
-            ? "" : attribute(element, kAXValueAttribute)
+            ? "" : stringValue(field(4))
         nodes.append(["path": path, "role": role, "title": title,
-                      "description": description, "value": value,
-                      "enabled": enabled])
-        for (index, child) in children(element).enumerated() {
+                      "description": stringValue(field(2)), "value": value,
+                      "enabled": stringValue(field(3))])
+        for (index, child) in (field(5) as? [AXUIElement] ?? []).enumerated() {
             walk(child, path + "." + String(index), depth + 1)
         }
     }
@@ -215,6 +252,7 @@ func snapshot() throws {
 
 func navigate(_ destination: String) throws {
     try activate()
+    try key(37, command: true) // Command-L
     let board = NSPasteboard.general
     let saved = (board.pasteboardItems ?? []).map { item -> NSPasteboardItem in
         let copy = NSPasteboardItem()
@@ -223,16 +261,17 @@ func navigate(_ destination: String) throws {
         }
         return copy
     }
-    key(37, command: true) // Command-L
+    defer {
+        board.clearContents()
+        if !saved.isEmpty { _ = board.writeObjects(saved) }
+    }
     board.clearContents()
     guard board.setString(destination, forType: .string) else {
         throw NSError(domain: "Could not write URL to clipboard", code: 5)
     }
-    key(9, command: true) // Command-V
-    key(36) // Return
+    try key(9, command: true) // Command-V
+    try key(36) // Return
     Thread.sleep(forTimeInterval: 0.25)
-    board.clearContents()
-    if !saved.isEmpty { _ = board.writeObjects(saved) }
 }
 
 func element(at path: String) -> AXUIElement? {
@@ -282,19 +321,6 @@ do {
         try navigate(arguments[3])
     case "refresh":
         try refreshWithoutFocus()
-    case "press":
-        guard arguments.count > 5, let target = element(at: arguments[3]) else { exit(5) }
-        let role = attribute(target, kAXRoleAttribute)
-        let title = attribute(target, kAXTitleAttribute)
-        guard role == arguments[4], title == arguments[5] else { exit(6) }
-        try activate()
-        var result = AXUIElementPerformAction(target, kAXPressAction as CFString)
-        if result != .success {
-            _ = AXUIElementPerformAction(target, "AXScrollToVisible" as CFString)
-            Thread.sleep(forTimeInterval: 0.2)
-            result = AXUIElementPerformAction(target, kAXPressAction as CFString)
-        }
-        guard result == .success else { throw NSError(domain: "Accessibility press failed", code: Int(result.rawValue)) }
     case "click", "click_fast":
         guard arguments.count > 5, let target = element(at: arguments[3]) else { exit(5) }
         let role = attribute(target, kAXRoleAttribute)
@@ -303,7 +329,7 @@ do {
         let fast = arguments[1] == "click_fast"
         try activate(fast: fast)
         try clickElement(target, fast: fast)
-    case "type", "type_careful", "type_paste":
+    case "type", "type_paste":
         guard arguments.count > 5, let target = element(at: arguments[3]) else { exit(5) }
         let role = attribute(target, kAXRoleAttribute)
         let title = attribute(target, kAXTitleAttribute)
@@ -318,7 +344,7 @@ do {
         guard isFocused(target) else {
             throw NSError(domain: "Browser input field did not receive focus", code: 12)
         }
-        key(0, command: true) // Command-A in the focused field
+        try key(0, command: true) // Command-A in the focused field
         let input = FileHandle.standardInput.readDataToEndOfFile()
         guard let text = String(data: input, encoding: .utf8) else { exit(7) }
         if arguments[1] == "type_paste" {
@@ -329,7 +355,7 @@ do {
                 throw NSError(domain: "Password paste did not fill the input", code: 14)
             }
         } else {
-            try typeText(text, careful: arguments[1] == "type_careful")
+            try typeText(text)
         }
     case "close": runningApp.terminate()
     default: exit(2)

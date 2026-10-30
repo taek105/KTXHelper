@@ -14,6 +14,8 @@ import time
 from pathlib import Path
 
 from service.exceptions import (
+    BrowserControlError,
+    BrowserSetupError,
     BrowserWindowClosedError,
     KorailAccessBlockedError,
     RefreshButtonNotFoundError,
@@ -26,16 +28,30 @@ BLOCK_MARKERS = ("미허가도구사용시이용이제한될수있습니다", "C
 QUEUE_MARKERS = ("현재접속자가많아", "접속대기중", "예상대기시간", "대기자수")
 
 
-class StaleBrowserControlError(RuntimeError):
+class StaleBrowserControlError(BrowserControlError):
     """A control moved or changed between the accessibility snapshot and action."""
 
 
 def _bridge_command():
     if platform.system() != "Darwin":
-        raise RuntimeError("일반 Chrome 입력 방식은 macOS에서만 사용할 수 있습니다.")
-    sdk = str(SDK_14) if SDK_14.exists() else subprocess.check_output(
-        ["xcrun", "--show-sdk-path"], text=True
-    ).strip()
+        raise BrowserSetupError("일반 Chrome 입력 방식은 macOS에서만 사용할 수 있습니다.")
+    try:
+        return [str(_build_bridge())]
+    except (OSError, subprocess.SubprocessError) as exc:
+        lines = []
+        if isinstance(exc, subprocess.CalledProcessError) and exc.stderr:
+            lines = exc.stderr.strip().splitlines()
+        detail = next((line for line in lines if "error:" in line), lines[0] if lines else exc)
+        raise BrowserSetupError(
+            f"Chrome 제어 도구 빌드에 실패했습니다: {detail} "
+            "(Xcode Command Line Tools 확인: xcode-select --install)"
+        ) from exc
+
+
+def _build_bridge():
+    sdk = str(SDK_14) if SDK_14.exists() else subprocess.run(
+        ["xcrun", "--show-sdk-path"], capture_output=True, text=True, check=True,
+    ).stdout.strip()
     cache = Path(tempfile.gettempdir()) / "ktxhelper-swift-cache"
     cache.mkdir(exist_ok=True)
     target = f"{platform.machine()}-apple-macosx14.5"
@@ -57,13 +73,15 @@ def _bridge_command():
                     os.replace(temporary, executable)
                 finally:
                     temporary.unlink(missing_ok=True)
-    return [str(executable)]
+    return executable
 
 
 class NativeChrome:
     def __init__(self, url):
         if not CHROME.exists():
-            raise RuntimeError("Google Chrome을 /Applications에 설치해주세요.")
+            raise BrowserSetupError("Google Chrome을 /Applications에 설치해주세요.")
+        # A first build takes several seconds. Finish it before the window wait starts.
+        _bridge_command()
         # Keep the profile while the payment window remains open after booking.
         self.profile = tempfile.mkdtemp(prefix="ktxhelper-chrome-")
         self.process = subprocess.Popen(
@@ -108,15 +126,18 @@ class NativeChrome:
         if self.process.poll() is not None:
             raise BrowserWindowClosedError("Chrome 창이 닫혔습니다.")
         command = [*_bridge_command(), action, str(self.pid), *map(str, arguments)]
-        result = subprocess.run(
-            command, capture_output=True, text=True, input=input_text, timeout=30
-        )
+        try:
+            result = subprocess.run(
+                command, capture_output=True, text=True, input=input_text, timeout=30
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise BrowserControlError(f"Chrome 조작이 30초 안에 끝나지 않았습니다: {action}") from exc
         if result.returncode:
             message = result.stderr.strip()
             if result.returncode == 4 or "Chrome window closed" in message:
                 raise BrowserWindowClosedError("Chrome 창이 닫혔습니다.")
             if result.returncode == 3:
-                raise RuntimeError(
+                raise BrowserSetupError(
                     "macOS 시스템 설정 > 개인정보 보호 및 보안 > 손쉬운 사용에서 "
                     "이 앱의 제어 권한을 켜주세요."
                 )
@@ -124,7 +145,7 @@ class NativeChrome:
                 raise StaleBrowserControlError("브라우저 입력칸이 다시 그려졌습니다.")
             if action == "refresh" and "Chrome refresh button not found" in message:
                 raise RefreshButtonNotFoundError("Chrome 새로고침 버튼을 찾지 못했습니다.")
-            raise RuntimeError(f"Chrome 조작 실패: {message or action}")
+            raise BrowserControlError(f"Chrome 조작 실패: {message or action}")
         return result.stdout
 
     def snapshot(self):
@@ -136,15 +157,12 @@ class NativeChrome:
     def refresh(self):
         self._call("refresh")
 
-    def press(self, node):
-        self._call("press", node["path"], node["role"], node["title"])
-
     def click(self, node, *, fast=False):
         self._call("click_fast" if fast else "click", node["path"], node["role"], node["title"])
 
-    def type_into(self, node, value, *, careful=False, paste=False):
+    def type_into(self, node, value, *, paste=False):
         self._call(
-            "type_paste" if paste else ("type_careful" if careful else "type"),
+            "type_paste" if paste else "type",
             node["path"], node["role"], node["title"],
             input_text=value,
         )

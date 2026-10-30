@@ -15,6 +15,7 @@ DEFAULT_REDIRECT_URI = "http://localhost:8000/auth/kakao/callback"
 DEFAULT_MESSAGE_LINK_URL = "https://www.korail.com/ticket/reservation/list"
 REQUEST_TIMEOUT_SECONDS = 10
 TOKEN_EXPIRY_MARGIN_SECONDS = 60
+MAX_FAILURE_REASON_LENGTH = 100
 
 
 class KakaoError(Exception):
@@ -302,6 +303,22 @@ def _format_departure_date(value: str) -> str:
         return value
 
 
+def _format_trip(
+    from_station: str,
+    to_station: str,
+    departure_date: str,
+    departure_time: str,
+) -> str:
+    formatted_date = _format_departure_date(departure_date)
+    formatted_time = (
+        departure_time if ":" in departure_time else f"{departure_time}:00"
+    )
+    return (
+        f"{from_station} → {to_station}\n"
+        f"{formatted_date} {formatted_time} 이후 출발\n"
+    )
+
+
 def build_booking_success_message(
     from_station: str,
     to_station: str,
@@ -309,15 +326,28 @@ def build_booking_success_message(
     departure_time: str,
 ) -> str:
     """Build the text sent after KTX confirms a booking."""
-    formatted_date = _format_departure_date(departure_date)
-    formatted_time = (
-        departure_time if ":" in departure_time else f"{departure_time}:00"
-    )
     return (
         "🚄 KTX 예매에 성공했습니다!\n"
-        f"{from_station} → {to_station}\n"
-        f"{formatted_date} {formatted_time} 이후 출발\n"
-        "코레일에 표시된 결제기한 내에 결제해 주세요."
+        + _format_trip(from_station, to_station, departure_date, departure_time)
+        + "코레일에 표시된 결제기한 내에 결제해 주세요."
+    )
+
+
+def build_macro_failure_message(
+    from_station: str,
+    to_station: str,
+    departure_date: str,
+    departure_time: str,
+    reason: str,
+) -> str:
+    """Build the text sent when the macro stops without a booking."""
+    # The default text template accepts at most 200 characters.
+    if len(reason) > MAX_FAILURE_REASON_LENGTH:
+        reason = reason[: MAX_FAILURE_REASON_LENGTH - 1] + "…"
+    return (
+        "⚠️ KTX 매크로가 중단되었습니다.\n"
+        + _format_trip(from_station, to_station, departure_date, departure_time)
+        + f"사유: {reason}"
     )
 
 
@@ -445,3 +475,20 @@ def notify_booking_success(
         departure_time,
     )
     return send_kakao_message(message, message_type="BOOKING_SUCCESS")
+
+
+def notify_macro_failure(
+    from_station: str,
+    to_station: str,
+    departure_date: str,
+    departure_time: str,
+    reason: str,
+) -> bool:
+    message = build_macro_failure_message(
+        from_station,
+        to_station,
+        departure_date,
+        departure_time,
+        reason,
+    )
+    return send_kakao_message(message, message_type="MACRO_FAILED")

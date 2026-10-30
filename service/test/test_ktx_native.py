@@ -1,11 +1,25 @@
+import subprocess
 import unittest
 from unittest.mock import MagicMock, patch
 from urllib.parse import parse_qs, urlparse
 
 from service import ktx
-from service.exceptions import BrowserWindowClosedError, KorailAccessBlockedError
-from service.ktx_native import KTX
-from service.native_browser import logged_in, page_state, schedule_rows
+from service.exceptions import (
+    BookingUnconfirmedError,
+    BrowserControlError,
+    BrowserSetupError,
+    BrowserWindowClosedError,
+    KorailAccessBlockedError,
+    TrainNotFoundError,
+)
+from service.ktx_native import KTX, MAX_BOOKING_FAILURES
+from service.native_browser import (
+    NativeChrome,
+    _bridge_command,
+    logged_in,
+    page_state,
+    schedule_rows,
+)
 
 
 def result_nodes(seat_title="매진"):
@@ -17,6 +31,25 @@ def result_nodes(seat_title="매진"):
         {"path": row + ".1", "role": "AXLink", "title": seat_title, "value": ""},
         {"path": row + ".2", "role": "AXLink", "title": "매진", "value": ""},
     ]
+
+
+def train_nodes(*trains):
+    """Search result rows for (train number, general seat title) pairs."""
+    nodes = []
+    for index, (train, seat_title) in enumerate(trains):
+        row = f"root.0.1.{index}"
+        nodes += [
+            {"path": row + ".0.1", "role": "AXStaticText", "title": "", "value": str(train)},
+            {"path": row + ".0.3", "role": "AXHeading",
+             "title": f"서울 → 부산(0{8 + index}:12 ~ 11:33)", "value": "3"},
+            {"path": row + ".1", "role": "AXLink", "title": seat_title, "value": ""},
+        ]
+    return nodes
+
+
+def page_at(url):
+    return [{"path": "root.0.0", "role": "AXTextField",
+             "title": "주소창 및 검색창", "value": url}]
 
 
 def login_nodes():
@@ -63,23 +96,6 @@ class KtxNativeTest(unittest.TestCase):
         with self.assertRaises(BrowserWindowClosedError):
             helper._start_authenticated_session("member", "password")
         browser.close.assert_called_once()
-
-    @patch("service.ktx_native.time.sleep")
-    @patch("service.ktx_native.NativeChrome")
-    def test_manual_login_waits_without_using_credentials(self, make_browser, _sleep):
-        browser = make_browser.return_value
-        success = [
-            {"path": "root.0.0", "role": "AXTextField",
-             "title": "주소창 및 검색창", "value": "korail.com/ticket/main"},
-            {"path": "root.0.1", "role": "AXLink", "title": "로그아웃", "value": ""},
-        ]
-        browser.snapshot.side_effect = [login_nodes(), success]
-        helper = KTX("서울", "부산", "20261003", "08", [1])
-
-        helper._start_manual_session("member", "password")
-
-        browser.type_into.assert_not_called()
-        browser.click.assert_not_called()
 
     @patch("service.ktx_native.time.sleep")
     @patch("service.ktx_native.NativeChrome")
@@ -131,7 +147,7 @@ class KtxNativeTest(unittest.TestCase):
         helper.browser.snapshot.return_value = result_nodes("매진")
         row = schedule_rows(result_nodes("예매"))[0]
         self.assertFalse(helper._book_ticket(row))
-        helper.browser.press.assert_not_called()
+        helper.browser.click.assert_not_called()
 
     def test_bookable_row_uses_detected_snapshot_and_fast_click(self):
         helper = KTX("서울", "부산", "20261003", "08", [1])
@@ -142,6 +158,132 @@ class KtxNativeTest(unittest.TestCase):
             self.assertTrue(helper._book_ticket(row, before=nodes))
         helper.browser.snapshot.assert_not_called()
         helper.browser.click.assert_called_once_with(row["seat"], fast=True)
+
+    def test_targets_selected_train_number_not_list_position(self):
+        nodes = train_nodes((101, "예매"), (121, "예매"))
+        helper = KTX("서울", "부산", "20261003", "08", [121])
+        with patch.object(helper, "_book_ticket", return_value=True) as book:
+            self.assertTrue(helper._check_result(nodes, schedule_rows(nodes)))
+        book.assert_called_once()
+        self.assertEqual(121, book.call_args.args[0]["train"])
+
+    def test_failed_booking_attempt_reloads_results_and_retries(self):
+        nodes = train_nodes((121, "예매"))
+        rows = schedule_rows(nodes)
+        helper = KTX("서울", "부산", "20261003", "08", [121])
+        helper.browser = MagicMock()
+        helper.browser.snapshot.return_value = page_at("korail.com/ticket/search/list?x=1")
+        failure = BrowserControlError("Chrome window did not become active Code=11")
+        with patch.object(helper, "_book_ticket", side_effect=[failure, True]) as book, \
+                patch.object(helper, "_refresh_result", return_value=(nodes, rows)) as refresh:
+            self.assertTrue(helper._check_result(nodes, rows))
+        self.assertEqual(2, book.call_count)
+        refresh.assert_called_once()
+
+    def test_failed_attempt_on_another_page_opens_results_again(self):
+        nodes = train_nodes((121, "대기신청"))
+        rows = schedule_rows(nodes)
+        helper = KTX("서울", "부산", "20261003", "08", [121], reserve_waiting=True)
+        helper.browser = MagicMock()
+        helper.browser.snapshot.return_value = page_at("korail.com/ticket/waiting")
+        with patch.object(helper, "_book_ticket",
+                          side_effect=[TimeoutError("'대기신청' 버튼을 찾지 못했습니다."), True]), \
+                patch.object(helper, "_open_search_page", return_value=(nodes, rows)) as reopen:
+            self.assertTrue(helper._check_result(nodes, rows))
+        reopen.assert_called_once()
+
+    def test_repeated_booking_failures_end_the_run(self):
+        nodes = train_nodes((121, "예매"))
+        rows = schedule_rows(nodes)
+        helper = KTX("서울", "부산", "20261003", "08", [121])
+        helper.browser = MagicMock()
+        helper.browser.snapshot.return_value = page_at("korail.com/ticket/search/list")
+        with patch.object(helper, "_book_ticket", side_effect=BrowserControlError("Code=11")) as book, \
+                patch.object(helper, "_refresh_result", return_value=(nodes, rows)):
+            with self.assertRaises(BrowserControlError):
+                helper._check_result(nodes, rows)
+        self.assertEqual(MAX_BOOKING_FAILURES, book.call_count)
+
+    def test_reservation_page_after_failed_attempt_counts_as_booked(self):
+        nodes = train_nodes((121, "예매"))
+        helper = KTX("서울", "부산", "20261003", "08", [121])
+        helper.browser = MagicMock()
+        helper.browser.snapshot.return_value = page_at("korail.com/ticket/reservation/detail")
+        with patch.object(helper, "_book_ticket",
+                          side_effect=TimeoutError("'예매' 버튼을 찾지 못했습니다.")) as book:
+            self.assertTrue(helper._check_result(nodes, schedule_rows(nodes)))
+        book.assert_called_once()
+
+    def test_failure_after_booking_click_is_not_retried(self):
+        nodes = train_nodes((121, "예매"))
+        helper = KTX("서울", "부산", "20261003", "08", [121])
+        helper.browser = MagicMock()
+        button = {"path": "root.9", "role": "AXButton", "title": "예매", "value": ""}
+        with patch.object(helper, "_wait_for_button", return_value=button), \
+                patch.object(helper, "_wait_for_reservation_detail",
+                             side_effect=TimeoutError("예약 상세 화면으로 이동하지 못했습니다.")):
+            with self.assertRaises(BookingUnconfirmedError):
+                helper._check_result(nodes, schedule_rows(nodes))
+        self.assertEqual(2, helper.browser.click.call_count)
+
+    @patch("service.ktx_native.time.sleep")
+    def test_detail_wait_survives_a_transient_bridge_error(self, _sleep):
+        helper = KTX("서울", "부산", "20261003", "08", [121])
+        helper.browser = MagicMock()
+        notice = {"path": "root.5", "role": "AXButton", "title": "확인", "value": ""}
+        helper.browser.snapshot.side_effect = [
+            page_at("korail.com/ticket/search/list") + [notice],
+            page_at("korail.com/ticket/search/list") + [notice],
+            page_at("korail.com/ticket/reservation/detail"),
+        ]
+        helper.browser.click.side_effect = [BrowserControlError("Code=11"), None]
+
+        helper._wait_for_reservation_detail()
+
+        self.assertEqual(2, helper.browser.click.call_count)
+
+    @patch("service.ktx_native.time.sleep")
+    @patch("service.ktx_native.wait_for_results")
+    def test_run_stops_when_selected_train_is_not_listed(self, wait_for_results, _sleep):
+        nodes = train_nodes((101, "매진"))
+        wait_for_results.return_value = (nodes, schedule_rows(nodes))
+        helper = KTX("서울", "부산", "20261003", "08", [121])
+        helper.browser = MagicMock()
+        with patch.object(helper, "_start_authenticated_session"), \
+                patch.object(helper, "_open_search_page", return_value=(nodes, schedule_rows(nodes))), \
+                patch.object(helper, "_check_result") as check:
+            with self.assertRaises(TrainNotFoundError) as raised:
+                helper.run("member", "password")
+        self.assertIn("121", str(raised.exception))
+        check.assert_not_called()
+
+    @patch("service.native_browser._bridge_command", return_value=["bridge"])
+    @patch("service.native_browser.subprocess.run")
+    def test_bridge_failures_have_specific_errors(self, run, _bridge_command):
+        browser = NativeChrome.__new__(NativeChrome)
+        browser.pid = 1
+        browser.process = MagicMock()
+        browser.process.poll.return_value = None
+        run.return_value = MagicMock(returncode=3, stdout="", stderr="permission")
+        with self.assertRaises(BrowserSetupError):
+            browser.snapshot()
+        run.return_value = MagicMock(
+            returncode=1, stdout="", stderr="Chrome lost focus before keyboard input Code=15",
+        )
+        with self.assertRaises(BrowserControlError):
+            browser.click({"path": "root", "role": "AXButton", "title": "예매"}, fast=True)
+        run.side_effect = subprocess.TimeoutExpired("bridge", 30)
+        with self.assertRaises(BrowserControlError):
+            browser.snapshot()
+
+    @patch("service.native_browser._build_bridge")
+    def test_bridge_build_failure_shows_the_tool_error(self, build_bridge):
+        build_bridge.side_effect = subprocess.CalledProcessError(
+            1, ["xcrun"], stderr="xcrun: error: invalid active developer path\n",
+        )
+        with self.assertRaises(BrowserSetupError) as raised:
+            _bridge_command()
+        self.assertIn("invalid active developer path", str(raised.exception))
 
 
 if __name__ == "__main__":
