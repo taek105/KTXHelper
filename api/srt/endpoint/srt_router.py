@@ -7,6 +7,8 @@ from api.srt.controller.srt_controller import run_get_schedule, run_macro_logic
 from core.event_logging import log_error, log_event, reset_run_id, set_run_id
 from service.kakao import notify_booking_success
 from service.exceptions import (
+    BrowserControlError,
+    BrowserSetupError,
     BrowserWindowClosedError,
     InvalidDateError,
     InvalidDateFormatError,
@@ -18,6 +20,38 @@ from service.exceptions import (
 )
 
 router = APIRouter()
+
+# Failures with a known cause: (exception types, HTTP status, failure code).
+KNOWN_ERRORS = (
+    (BrowserWindowClosedError, 409, "BROWSER_CLOSED"),
+    (RefreshButtonNotFoundError, 503, "REFRESH_BUTTON_NOT_FOUND"),
+    (KorailAccessBlockedError, 429, "KORAIL_ACCESS_BLOCKED"),
+    (LoginFailedError, 401, "INVALID_LOGIN"),
+    (
+        (
+            InvalidDateError,
+            InvalidDateFormatError,
+            InvalidStationNameError,
+            InvalidTimeFormatError,
+        ),
+        422,
+        "INVALID_INPUT",
+    ),
+    (BrowserSetupError, 503, "BROWSER_SETUP_FAILED"),
+    (BrowserControlError, 502, "BROWSER_CONTROL_FAILED"),
+    (TimeoutError, 504, "TIMEOUT"),
+)
+
+
+def _known_error(exc: Exception) -> tuple[int, str] | None:
+    return next(
+        (
+            (status_code, failure_code)
+            for types, status_code, failure_code in KNOWN_ERRORS
+            if isinstance(exc, types)
+        ),
+        None,
+    )
 
 
 @router.post("/run", response_model=bool)
@@ -53,33 +87,13 @@ def post_run(
             target=seats,
             want_reserve=reserve,
         )
-    except BrowserWindowClosedError as exc:
-        _log_macro_failure("BROWSER_CLOSED", str(exc), started_at)
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    except RefreshButtonNotFoundError as exc:
-        _log_macro_failure("REFRESH_BUTTON_NOT_FOUND", str(exc), started_at)
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    except KorailAccessBlockedError as exc:
-        _log_macro_failure("KORAIL_ACCESS_BLOCKED", str(exc), started_at)
-        raise HTTPException(status_code=429, detail=str(exc)) from exc
-    except LoginFailedError as exc:
-        _log_macro_failure("INVALID_LOGIN", str(exc), started_at)
-        raise HTTPException(status_code=401, detail=str(exc)) from exc
-    except (
-        InvalidDateError,
-        InvalidDateFormatError,
-        InvalidStationNameError,
-        InvalidTimeFormatError,
-    ) as exc:
-        _log_macro_failure("INVALID_INPUT", str(exc), started_at)
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    except Exception:
-        _log_macro_failure(
-            "INTERNAL_ERROR",
-            "매크로 실행 중 서버 오류가 발생했습니다.",
-            started_at,
-        )
-        raise
+    except Exception as exc:
+        known = _known_error(exc)
+        reason = str(exc) if known else "매크로 실행 중 서버 오류가 발생했습니다."
+        _log_macro_failure(known[1] if known else "INTERNAL_ERROR", reason, started_at)
+        if known is None:
+            raise
+        raise HTTPException(status_code=known[0], detail=reason) from exc
     else:
         log_event(
             "MACRO_COMPLETED",
@@ -140,9 +154,13 @@ def get_schedule(
             date,
             time,
         )
-    except KorailAccessBlockedError as exc:
-        raise HTTPException(status_code=429, detail=str(exc)) from exc
-    except LoginFailedError as exc:
-        raise HTTPException(status_code=401, detail=str(exc)) from exc
-    except BrowserWindowClosedError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except Exception as exc:
+        known = _known_error(exc)
+        if known is None:
+            raise
+        log_event(
+            "SCHEDULE_FAILED",
+            failure_code=known[1],
+            failure_reason=str(exc),
+        )
+        raise HTTPException(status_code=known[0], detail=str(exc)) from exc

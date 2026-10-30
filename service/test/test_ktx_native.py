@@ -1,11 +1,23 @@
+import subprocess
 import unittest
 from unittest.mock import MagicMock, patch
 from urllib.parse import parse_qs, urlparse
 
 from service import ktx
-from service.exceptions import BrowserWindowClosedError, KorailAccessBlockedError
+from service.exceptions import (
+    BrowserControlError,
+    BrowserSetupError,
+    BrowserWindowClosedError,
+    KorailAccessBlockedError,
+)
 from service.ktx_native import KTX
-from service.native_browser import logged_in, page_state, schedule_rows
+from service.native_browser import (
+    NativeChrome,
+    _bridge_command,
+    logged_in,
+    page_state,
+    schedule_rows,
+)
 
 
 def result_nodes(seat_title="매진"):
@@ -125,6 +137,34 @@ class KtxNativeTest(unittest.TestCase):
             self.assertTrue(helper._book_ticket(row, before=nodes))
         helper.browser.snapshot.assert_not_called()
         helper.browser.click.assert_called_once_with(row["seat"], fast=True)
+
+    @patch("service.native_browser._bridge_command", return_value=["bridge"])
+    @patch("service.native_browser.subprocess.run")
+    def test_bridge_failures_have_specific_errors(self, run, _bridge_command):
+        browser = NativeChrome.__new__(NativeChrome)
+        browser.pid = 1
+        browser.process = MagicMock()
+        browser.process.poll.return_value = None
+        run.return_value = MagicMock(returncode=3, stdout="", stderr="permission")
+        with self.assertRaises(BrowserSetupError):
+            browser.snapshot()
+        run.return_value = MagicMock(
+            returncode=1, stdout="", stderr="Chrome lost focus before keyboard input Code=15",
+        )
+        with self.assertRaises(BrowserControlError):
+            browser.click({"path": "root", "role": "AXButton", "title": "예매"}, fast=True)
+        run.side_effect = subprocess.TimeoutExpired("bridge", 30)
+        with self.assertRaises(BrowserControlError):
+            browser.snapshot()
+
+    @patch("service.native_browser._build_bridge")
+    def test_bridge_build_failure_shows_the_tool_error(self, build_bridge):
+        build_bridge.side_effect = subprocess.CalledProcessError(
+            1, ["xcrun"], stderr="xcrun: error: invalid active developer path\n",
+        )
+        with self.assertRaises(BrowserSetupError) as raised:
+            _bridge_command()
+        self.assertIn("invalid active developer path", str(raised.exception))
 
 
 if __name__ == "__main__":

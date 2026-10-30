@@ -25,3 +25,11 @@ class RefreshButtonNotFoundError(Exception):
 
 class KorailAccessBlockedError(Exception):
     pass
+
+
+class BrowserSetupError(RuntimeError):
+    pass
+
+
+class BrowserControlError(RuntimeError):
+    pass
