@@ -43,7 +43,7 @@ def post_run(
         reserve_requested=reserve,
     )
     try:
-        result = run_macro_logic(
+        run_macro_logic(
             login_id=login_id,
             login_psw=login_psw,
             dpt_stn=from_station,
@@ -83,29 +83,28 @@ def post_run(
     else:
         log_event(
             "MACRO_COMPLETED",
-            result="BOOKED" if result else "NOT_BOOKED",
+            result="BOOKED",
             duration_ms=round((perf_counter() - started_at) * 1000),
         )
-        if result:
-            try:
-                notify_booking_success(
-                    from_station=from_station,
-                    to_station=to_station,
-                    departure_date=date,
-                    departure_time=time,
-                )
-            except Exception:
-                log_event(
-                    "KAKAO_MESSAGE_FAILED",
-                    message_type="BOOKING_SUCCESS",
-                    failure_code="INTERNAL_ERROR",
-                    failure_reason="카카오 메시지 발송 중 서버 오류가 발생했습니다.",
-                )
-                log_error(
-                    "카카오 메시지 발송 중 처리되지 않은 오류가 발생했습니다.",
-                    exc_info=True,
-                )
-        return result
+        try:
+            notify_booking_success(
+                from_station=from_station,
+                to_station=to_station,
+                departure_date=date,
+                departure_time=time,
+            )
+        except Exception:
+            log_event(
+                "KAKAO_MESSAGE_FAILED",
+                message_type="BOOKING_SUCCESS",
+                failure_code="INTERNAL_ERROR",
+                failure_reason="카카오 메시지 발송 중 서버 오류가 발생했습니다.",
+            )
+            log_error(
+                "카카오 메시지 발송 중 처리되지 않은 오류가 발생했습니다.",
+                exc_info=True,
+            )
+        return True
     finally:
         reset_run_id(run_context_token)
 

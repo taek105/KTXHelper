@@ -306,17 +306,12 @@ async function runMacro() {
       throw new Error(message);
     }
 
-    const success = await res.json();
-    if (success) {
-      triggerAlarmPopup({
-        title: '🚀 예매 알림',
-        messages: [
-          '코레일에 표시된 결제기한 내에 결제하셔야 예매가 확정됩니다.'
-        ]
-      });
-    } else {
-      alert('예약에 실패했습니다.');
-    }
+    triggerAlarmPopup({
+      title: '🚀 예매 알림',
+      messages: [
+        '코레일에 표시된 결제기한 내에 결제하셔야 예매가 확정됩니다.'
+      ]
+    });
   } catch (err) {
     alert('매크로 실행 중 오류: ' + err.message);
   }

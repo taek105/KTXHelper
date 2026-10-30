@@ -23,7 +23,6 @@ from service.native_browser import (
 LOGIN_URL = "https://www.korail.com/ticket/login"
 RESERVATION_DETAIL_PATH = "/ticket/reservation/detail"
 LOGIN_WAIT_TIMEOUT = 60
-MANUAL_LOGIN_WAIT_TIMEOUT = 300
 RESULT_WAIT_TIMEOUT = 120
 
 
@@ -144,21 +143,6 @@ class KTX:
                     pass
             time.sleep(0.1)
         raise LoginFailedError(f"코레일 {title} 입력칸을 찾지 못했습니다.")
-
-    def _start_manual_session(self, login_id=None, login_psw=None):
-        self.browser = NativeChrome(LOGIN_URL)
-        try:
-            deadline = time.monotonic() + MANUAL_LOGIN_WAIT_TIMEOUT
-            while time.monotonic() < deadline:
-                nodes = self.browser.snapshot()
-                page_state(nodes)
-                if logged_in(nodes) and "/ticket/login" not in address(nodes):
-                    return
-                time.sleep(0.3)
-            raise LoginFailedError("5분 안에 코레일 수동 로그인 완료를 확인하지 못했습니다.")
-        except Exception:
-            self._close_browser()
-            raise
 
     def _start_authenticated_session(self, login_id=None, login_psw=None):
         if not login_id or not login_psw:

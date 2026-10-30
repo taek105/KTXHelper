@@ -136,15 +136,12 @@ class NativeChrome:
     def refresh(self):
         self._call("refresh")
 
-    def press(self, node):
-        self._call("press", node["path"], node["role"], node["title"])
-
     def click(self, node, *, fast=False):
         self._call("click_fast" if fast else "click", node["path"], node["role"], node["title"])
 
-    def type_into(self, node, value, *, careful=False, paste=False):
+    def type_into(self, node, value, *, paste=False):
         self._call(
-            "type_paste" if paste else ("type_careful" if careful else "type"),
+            "type_paste" if paste else "type",
             node["path"], node["role"], node["title"],
             input_text=value,
         )

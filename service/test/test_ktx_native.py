@@ -66,23 +66,6 @@ class KtxNativeTest(unittest.TestCase):
 
     @patch("service.ktx_native.time.sleep")
     @patch("service.ktx_native.NativeChrome")
-    def test_manual_login_waits_without_using_credentials(self, make_browser, _sleep):
-        browser = make_browser.return_value
-        success = [
-            {"path": "root.0.0", "role": "AXTextField",
-             "title": "주소창 및 검색창", "value": "korail.com/ticket/main"},
-            {"path": "root.0.1", "role": "AXLink", "title": "로그아웃", "value": ""},
-        ]
-        browser.snapshot.side_effect = [login_nodes(), success]
-        helper = KTX("서울", "부산", "20261003", "08", [1])
-
-        helper._start_manual_session("member", "password")
-
-        browser.type_into.assert_not_called()
-        browser.click.assert_not_called()
-
-    @patch("service.ktx_native.time.sleep")
-    @patch("service.ktx_native.NativeChrome")
     def test_auto_login_then_proceeds_on_success(self, make_browser, _sleep):
         browser = make_browser.return_value
         success = [
@@ -131,7 +114,7 @@ class KtxNativeTest(unittest.TestCase):
         helper.browser.snapshot.return_value = result_nodes("매진")
         row = schedule_rows(result_nodes("예매"))[0]
         self.assertFalse(helper._book_ticket(row))
-        helper.browser.press.assert_not_called()
+        helper.browser.click.assert_not_called()
 
     def test_bookable_row_uses_detected_snapshot_and_fast_click(self):
         helper = KTX("서울", "부산", "20261003", "08", [1])

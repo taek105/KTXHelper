@@ -7,7 +7,7 @@ import Foundation
 //actions are macOS mouse/keyboard events or accessibility presses.
 let arguments = CommandLine.arguments
 guard arguments.count >= 3, let processID = Int32(arguments[2]) else {
-    fputs("usage: native_browser <snapshot|navigate|refresh|press|click|type|close> <pid> [argument]\n", stderr)
+    fputs("usage: native_browser <snapshot|navigate|refresh|click|type|close> <pid> [argument]\n", stderr)
     exit(2)
 }
 guard AXIsProcessTrusted() else {
@@ -92,7 +92,7 @@ func key(_ code: CGKeyCode, command: Bool = false, shift: Bool = false,
     Thread.sleep(forTimeInterval: pause)
 }
 
-func typeText(_ text: String, careful: Bool = false) throws {
+func typeText(_ text: String) throws {
     // Virtual key codes are US keyboard positions. Select an ASCII layout so
     // the user's Korean input mode cannot change the entered credentials.
     let originalSource = TISCopyCurrentKeyboardInputSource().takeRetainedValue()
@@ -118,13 +118,11 @@ func typeText(_ text: String, careful: Bool = false) throws {
     ]
     for character in text {
         if let index = base.firstIndex(of: character) {
-            key(codes[index], pause: careful ? 0.1 : 0.035)
-            if careful { Thread.sleep(forTimeInterval: Double.random(in: 0.05...0.16)) }
+            key(codes[index], pause: 0.035)
             continue
         }
         if let index = shifted.firstIndex(of: character) {
-            key(codes[index], shift: true, pause: careful ? 0.1 : 0.035)
-            if careful { Thread.sleep(forTimeInterval: Double.random(in: 0.05...0.16)) }
+            key(codes[index], shift: true, pause: 0.035)
             continue
         }
         let units = Array(String(character).utf16)
@@ -137,7 +135,7 @@ func typeText(_ text: String, careful: Bool = false) throws {
                 }
             }
         }
-        Thread.sleep(forTimeInterval: careful ? 0.1 : 0.035)
+        Thread.sleep(forTimeInterval: 0.035)
     }
 }
 
@@ -289,19 +287,6 @@ do {
         try navigate(arguments[3])
     case "refresh":
         try refreshWithoutFocus()
-    case "press":
-        guard arguments.count > 5, let target = element(at: arguments[3]) else { exit(5) }
-        let role = attribute(target, kAXRoleAttribute)
-        let title = attribute(target, kAXTitleAttribute)
-        guard role == arguments[4], title == arguments[5] else { exit(6) }
-        try activate()
-        var result = AXUIElementPerformAction(target, kAXPressAction as CFString)
-        if result != .success {
-            _ = AXUIElementPerformAction(target, "AXScrollToVisible" as CFString)
-            Thread.sleep(forTimeInterval: 0.2)
-            result = AXUIElementPerformAction(target, kAXPressAction as CFString)
-        }
-        guard result == .success else { throw NSError(domain: "Accessibility press failed", code: Int(result.rawValue)) }
     case "click", "click_fast":
         guard arguments.count > 5, let target = element(at: arguments[3]) else { exit(5) }
         let role = attribute(target, kAXRoleAttribute)
@@ -310,7 +295,7 @@ do {
         let fast = arguments[1] == "click_fast"
         try activate(fast: fast)
         try clickElement(target, fast: fast)
-    case "type", "type_careful", "type_paste":
+    case "type", "type_paste":
         guard arguments.count > 5, let target = element(at: arguments[3]) else { exit(5) }
         let role = attribute(target, kAXRoleAttribute)
         let title = attribute(target, kAXTitleAttribute)
@@ -336,7 +321,7 @@ do {
                 throw NSError(domain: "Password paste did not fill the input", code: 14)
             }
         } else {
-            try typeText(text, careful: arguments[1] == "type_careful")
+            try typeText(text)
         }
     case "close": runningApp.terminate()
     default: exit(2)
