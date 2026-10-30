@@ -20,11 +20,20 @@ guard let runningApp = NSRunningApplication(processIdentifier: processID) else {
 }
 let app = AXUIElementCreateApplication(pid_t(processID))
 
+func stringValue(_ raw: CFTypeRef?) -> String {
+    guard let raw, CFGetTypeID(raw) != AXUIElementGetTypeID(),
+          CFGetTypeID(raw) != CFNullGetTypeID() else { return "" }
+    // Batched reads report a missing attribute as an error value in the result.
+    if CFGetTypeID(raw) == AXValueGetTypeID(), AXValueGetType(raw as! AXValue) == .axError {
+        return ""
+    }
+    return "\(raw)"
+}
+
 func attribute(_ element: AXUIElement, _ name: String) -> String {
     var raw: CFTypeRef?
-    guard AXUIElementCopyAttributeValue(element, name as CFString, &raw) == .success,
-          let raw, CFGetTypeID(raw) != AXUIElementGetTypeID() else { return "" }
-    return "\(raw)"
+    guard AXUIElementCopyAttributeValue(element, name as CFString, &raw) == .success else { return "" }
+    return stringValue(raw)
 }
 
 func children(_ element: AXUIElement) -> [AXUIElement] {
@@ -195,21 +204,29 @@ func isFocused(_ target: AXUIElement) -> Bool {
     return CFBooleanGetValue(raw as! CFBoolean)
 }
 
+// Read all snapshot fields with one accessibility request per node.
+let snapshotAttributes = [
+    kAXRoleAttribute, kAXTitleAttribute, kAXDescriptionAttribute,
+    kAXEnabledAttribute, kAXValueAttribute, kAXChildrenAttribute,
+] as CFArray
+
 func snapshot() throws {
     guard let window = firstWindow() else { throw NSError(domain: "Chrome window closed", code: 4) }
     var nodes: [[String: Any]] = []
     func walk(_ element: AXUIElement, _ path: String, _ depth: Int) {
         guard depth < 40, nodes.count < 4000 else { return }
-        let role = attribute(element, kAXRoleAttribute)
-        let title = attribute(element, kAXTitleAttribute)
-        let description = attribute(element, kAXDescriptionAttribute)
-        let enabled = attribute(element, kAXEnabledAttribute)
+        var raw: CFArray?
+        let values = AXUIElementCopyMultipleAttributeValues(element, snapshotAttributes, [], &raw) == .success
+            ? (raw as? [CFTypeRef] ?? []) : []
+        func field(_ index: Int) -> CFTypeRef? { values.indices.contains(index) ? values[index] : nil }
+        let role = stringValue(field(0))
+        let title = stringValue(field(1))
         let value = role == "AXTextField" && title != "주소창 및 검색창" || role == "AXSecureTextField"
-            ? "" : attribute(element, kAXValueAttribute)
+            ? "" : stringValue(field(4))
         nodes.append(["path": path, "role": role, "title": title,
-                      "description": description, "value": value,
-                      "enabled": enabled])
-        for (index, child) in children(element).enumerated() {
+                      "description": stringValue(field(2)), "value": value,
+                      "enabled": stringValue(field(3))])
+        for (index, child) in (field(5) as? [AXUIElement] ?? []).enumerated() {
             walk(child, path + "." + String(index), depth + 1)
         }
     }
