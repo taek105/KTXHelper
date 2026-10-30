@@ -37,3 +37,7 @@ class BrowserControlError(RuntimeError):
 
 class TrainNotFoundError(Exception):
     pass
+
+
+class BookingUnconfirmedError(Exception):
+    pass

@@ -24,6 +24,19 @@ class KakaoNotificationTest(unittest.TestCase):
         self.assertIn("2026/08/21 08:00 이후 출발", message)
         self.assertIn("코레일에 표시된 결제기한 내에 결제", message)
 
+    def test_builds_macro_failure_message_within_template_limit(self):
+        message = kakao.build_macro_failure_message(
+            "울산(통도사)",
+            "여수EXPO",
+            "20260821",
+            "08",
+            "사유" * 200,
+        )
+
+        self.assertIn("KTX 매크로가 중단", message)
+        self.assertIn("2026/08/21 08:00 이후 출발", message)
+        self.assertLessEqual(len(message), 200)
+
     @patch.object(kakao, "log_event")
     @patch.object(kakao.request, "urlopen")
     def test_sends_default_text_template_to_memo_api(self, urlopen, log_event):

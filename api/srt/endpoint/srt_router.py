@@ -5,8 +5,9 @@ from fastapi import APIRouter, Form, HTTPException
 
 from api.srt.controller.srt_controller import run_get_schedule, run_macro_logic
 from core.event_logging import log_error, log_event, reset_run_id, set_run_id
-from service.kakao import notify_booking_success
+from service.kakao import notify_booking_success, notify_macro_failure
 from service.exceptions import (
+    BookingUnconfirmedError,
     BrowserControlError,
     BrowserSetupError,
     BrowserWindowClosedError,
@@ -39,6 +40,7 @@ KNOWN_ERRORS = (
         422,
         "INVALID_INPUT",
     ),
+    (BookingUnconfirmedError, 502, "BOOKING_UNCONFIRMED"),
     (BrowserSetupError, 503, "BROWSER_SETUP_FAILED"),
     (BrowserControlError, 502, "BROWSER_CONTROL_FAILED"),
     (TimeoutError, 504, "TIMEOUT"),
@@ -76,12 +78,15 @@ def post_run(
     run_id = uuid4().hex
     run_context_token = set_run_id(run_id)
     started_at = perf_counter()
+    trip = {
+        "from_station": from_station,
+        "to_station": to_station,
+        "departure_date": date,
+        "departure_time": time,
+    }
     log_event(
         "MACRO_STARTED",
-        from_station=from_station,
-        to_station=to_station,
-        departure_date=date,
-        departure_time=time,
+        **trip,
         reserve_requested=reserve,
         target_trains=trains,
     )
@@ -100,6 +105,9 @@ def post_run(
         known = _known_error(exc)
         reason = str(exc) if known else "매크로 실행 중 서버 오류가 발생했습니다."
         _log_macro_failure(known[1] if known else "INTERNAL_ERROR", reason, started_at)
+        # Closing the Chrome window is how users stop the macro.
+        if not isinstance(exc, BrowserWindowClosedError):
+            _notify("MACRO_FAILED", notify_macro_failure, **trip, reason=reason)
         if known is None:
             raise
         raise HTTPException(status_code=known[0], detail=reason) from exc
@@ -109,24 +117,7 @@ def post_run(
             result="BOOKED",
             duration_ms=round((perf_counter() - started_at) * 1000),
         )
-        try:
-            notify_booking_success(
-                from_station=from_station,
-                to_station=to_station,
-                departure_date=date,
-                departure_time=time,
-            )
-        except Exception:
-            log_event(
-                "KAKAO_MESSAGE_FAILED",
-                message_type="BOOKING_SUCCESS",
-                failure_code="INTERNAL_ERROR",
-                failure_reason="카카오 메시지 발송 중 서버 오류가 발생했습니다.",
-            )
-            log_error(
-                "카카오 메시지 발송 중 처리되지 않은 오류가 발생했습니다.",
-                exc_info=True,
-            )
+        _notify("BOOKING_SUCCESS", notify_booking_success, **trip)
         return True
     finally:
         reset_run_id(run_context_token)
@@ -143,6 +134,22 @@ def _log_macro_failure(
         failure_reason=failure_reason,
         duration_ms=round((perf_counter() - started_at) * 1000),
     )
+
+
+def _notify(message_type: str, notify, **fields) -> None:
+    try:
+        notify(**fields)
+    except Exception:
+        log_event(
+            "KAKAO_MESSAGE_FAILED",
+            message_type=message_type,
+            failure_code="INTERNAL_ERROR",
+            failure_reason="카카오 메시지 발송 중 서버 오류가 발생했습니다.",
+        )
+        log_error(
+            "카카오 메시지 발송 중 처리되지 않은 오류가 발생했습니다.",
+            exc_info=True,
+        )
 
 
 @router.post("/schedule", response_model=None)

@@ -5,6 +5,8 @@ import time
 from datetime import date
 
 from service.exceptions import (
+    BookingUnconfirmedError,
+    BrowserControlError,
     InvalidDateError,
     InvalidDateFormatError,
     LoginFailedError,
@@ -22,9 +24,11 @@ from service.native_browser import (
 )
 
 LOGIN_URL = "https://www.korail.com/ticket/login"
+SEARCH_RESULT_PATH = "/ticket/search/list"
 RESERVATION_DETAIL_PATH = "/ticket/reservation/detail"
 LOGIN_WAIT_TIMEOUT = 60
 RESULT_WAIT_TIMEOUT = 120
+MAX_BOOKING_FAILURES = 3
 
 
 def _find_button(nodes, title, *, excluded_paths=(), exact=False, roles=("AXButton",)):
@@ -109,7 +113,6 @@ class KTX:
         self.reserve_waiting = reserve_waiting
         self.browser = None
         self.search_url = build_search_url(dpt_stn, arr_stn, dpt_dt, dpt_tm)
-        self.is_booked = False
         self.cnt_refresh = 0
         self._check_input()
 
@@ -266,7 +269,6 @@ class KTX:
             success_path=RESERVATION_DETAIL_PATH if not waiting else None,
         )
         if button is None:
-            self.is_booked = True
             print("KTX 예약 완료")
             return True
         self.browser.click(button, fast=True)
@@ -277,24 +279,36 @@ class KTX:
                 "대기신청", timeout=20, exact=True, roles=("AXButton", "AXLink"),
             )
             self.browser.click(confirmation, fast=True)
-        else:
-            # Some trains show an information notice before the detail page.
-            deadline = time.monotonic() + RESULT_WAIT_TIMEOUT
-            while time.monotonic() < deadline:
+            print("KTX 예약 대기 완료")
+            return True
+        # The booking request may already be sent. Retrying could book twice,
+        # so a failure from here asks the user to check the reservation list.
+        try:
+            self._wait_for_reservation_detail()
+        except TimeoutError as exc:
+            raise BookingUnconfirmedError(
+                "예매 버튼을 누른 뒤 결과를 확인하지 못했습니다. 코레일 예약 내역을 확인해주세요."
+            ) from exc
+        print("KTX 예약 완료")
+        return True
+
+    def _wait_for_reservation_detail(self):
+        # Some trains show an information notice before the detail page.
+        deadline = time.monotonic() + RESULT_WAIT_TIMEOUT
+        while time.monotonic() < deadline:
+            try:
                 nodes = self.browser.snapshot()
                 page_state(nodes)
                 if RESERVATION_DETAIL_PATH in address(nodes):
-                    self.is_booked = True
-                    print("KTX 예약 완료")
-                    return True
+                    return
                 notice = _find_button(nodes, "확인")
                 if notice:
                     self.browser.click(notice, fast=True)
-                time.sleep(random.uniform(0.05, 0.1))
-            raise TimeoutError("예약 상세 화면으로 이동하지 못했습니다.")
-        self.is_booked = True
-        print("KTX 예약 대기 완료")
-        return True
+            except BrowserControlError as exc:
+                # Safe to repeat: this loop never presses the booking button again.
+                print(f"예약 상세 화면 확인 중 오류, 다시 시도합니다: {exc}")
+            time.sleep(random.uniform(0.05, 0.1))
+        raise TimeoutError("예약 상세 화면으로 이동하지 못했습니다.")
 
     def _book_targets(self, nodes, rows):
         by_train = {row["train"]: row for row in rows}
@@ -309,12 +323,35 @@ class KTX:
                 return True
         return False
 
+    def _return_to_results(self, nodes):
+        # A failed attempt can leave a dialog or another page open.
+        if SEARCH_RESULT_PATH in address(nodes):
+            return self._refresh_result()
+        return self._open_search_page()
+
     def _check_result(self, nodes, rows):
-        while not self.is_booked:
-            if self._book_targets(nodes, rows):
-                return True
+        failures = 0
+        while True:
+            try:
+                if nodes is None:
+                    nodes = self.browser.snapshot()
+                    # A slow reservation can finish after the attempt timed out.
+                    if RESERVATION_DETAIL_PATH in address(nodes):
+                        print("KTX 예약 완료")
+                        return True
+                    nodes, rows = self._return_to_results(nodes)
+                if self._book_targets(nodes, rows):
+                    return True
+                failures = 0
+            except (BrowserControlError, TimeoutError) as exc:
+                # One missed click must not end a long wait.
+                failures += 1
+                if failures >= MAX_BOOKING_FAILURES:
+                    raise
+                print(f"예매 시도 실패 {failures}회, 다시 조회합니다: {exc}")
+                nodes = rows = None
+                continue
             nodes, rows = self._refresh_result()
-        return True
 
     def _missing_trains(self, rows):
         found = {row["train"] for row in rows}

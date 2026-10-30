@@ -21,24 +21,47 @@ SCHEDULE_FORM = dict(
 )
 
 
-
 class BrowserWindowApiTest(unittest.TestCase):
+    @patch.object(srt_router, "notify_macro_failure")
     @patch.object(
         srt_router,
         "run_macro_logic",
         side_effect=BrowserWindowClosedError("브라우저 창이 닫혔습니다."),
     )
-    def test_post_run_returns_conflict_for_closed_browser(self, _run_macro):
+    def test_post_run_returns_conflict_for_closed_browser(self, _run_macro, notify):
         with self.assertRaises(HTTPException) as raised:
             srt_router.post_run(**RUN_FORM)
         self.assertEqual(409, raised.exception.status_code)
+        notify.assert_not_called()
 
+    @patch.object(srt_router, "notify_macro_failure")
+    @patch.object(
+        srt_router,
+        "run_macro_logic",
+        side_effect=BrowserControlError("Chrome 조작 실패: Code=11"),
+    )
+    def test_post_run_notifies_when_macro_stops(self, _run_macro, notify):
+        with self.assertRaises(HTTPException) as raised:
+            srt_router.post_run(**RUN_FORM)
+        self.assertEqual(502, raised.exception.status_code)
+        notify.assert_called_once()
+        self.assertEqual("Chrome 조작 실패: Code=11", notify.call_args.kwargs["reason"])
+
+    @patch.object(srt_router, "notify_macro_failure")
     @patch.object(srt_router, "run_macro_logic")
-    def test_post_run_rejects_requests_without_trains(self, run_macro):
+    def test_post_run_rejects_requests_without_trains(self, run_macro, notify):
         with self.assertRaises(HTTPException) as raised:
             srt_router.post_run(**{**RUN_FORM, "trains": []})
         self.assertEqual(422, raised.exception.status_code)
         run_macro.assert_not_called()
+        notify.assert_not_called()
+
+    @patch.object(srt_router, "notify_macro_failure")
+    @patch.object(srt_router, "run_macro_logic", side_effect=ValueError("internal detail"))
+    def test_post_run_notifies_without_internal_details(self, _run_macro, notify):
+        with self.assertRaises(ValueError):
+            srt_router.post_run(**RUN_FORM)
+        self.assertNotIn("internal detail", notify.call_args.kwargs["reason"])
 
     @patch.object(
         srt_router,
@@ -65,7 +88,6 @@ class BrowserWindowApiTest(unittest.TestCase):
                 self.assertEqual(str(error), raised.exception.detail)
                 self.assertEqual("SCHEDULE_FAILED", log_event.call_args.args[0])
                 self.assertEqual(str(error), log_event.call_args.kwargs["failure_reason"])
-
 
 
 if __name__ == "__main__":
