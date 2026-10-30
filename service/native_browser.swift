@@ -169,8 +169,15 @@ func pasteText(_ text: String) throws {
         board.clearContents()
         if !saved.isEmpty { _ = board.writeObjects(saved) }
     }
-    board.clearContents()
-    guard board.setString(text, forType: .string) else {
+    let item = NSPasteboardItem()
+    _ = item.setString(text, forType: .string)
+    // nspasteboard.org markers ask clipboard managers not to record the password.
+    for marker in ["org.nspasteboard.ConcealedType", "org.nspasteboard.TransientType"] {
+        _ = item.setData(Data(), forType: NSPasteboard.PasteboardType(marker))
+    }
+    // currentHostOnly keeps it off Universal Clipboard on nearby devices.
+    _ = board.prepareForNewContents(with: .currentHostOnly)
+    guard board.writeObjects([item]), board.string(forType: .string) == text else {
         throw NSError(domain: "Could not write password to clipboard", code: 13)
     }
     try key(9, command: true) // Command-V
