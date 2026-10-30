@@ -68,27 +68,34 @@ func activate(fast: Bool = false) throws {
     guard let window = firstWindow() else { throw NSError(domain: "Chrome window closed", code: 4) }
     _ = runningApp.activate(options: [])
     _ = AXUIElementPerformAction(window, kAXRaiseAction as CFString)
-    if fast {
-        let deadline = Date().addingTimeInterval(1.5)
-        var lastAttempt = Date()
-        while !isChromeFrontmost() {
-            guard Date() < deadline else {
-                throw NSError(domain: "Chrome window did not become active", code: 11)
-            }
-            if Date().timeIntervalSince(lastAttempt) >= 0.2 {
-                _ = runningApp.activate(options: [])
-                _ = AXUIElementPerformAction(window, kAXRaiseAction as CFString)
-                lastAttempt = Date()
-            }
-            Thread.sleep(forTimeInterval: 0.02)
+    let deadline = Date().addingTimeInterval(fast ? 1.5 : 3)
+    var lastAttempt = Date()
+    while !isChromeFrontmost() {
+        guard Date() < deadline else {
+            throw NSError(domain: "Chrome window did not become active", code: 11)
         }
-    } else {
-        Thread.sleep(forTimeInterval: 0.2)
+        if Date().timeIntervalSince(lastAttempt) >= 0.2 {
+            _ = runningApp.activate(options: [])
+            // macOS 14+ may ignore activation requests from background processes.
+            _ = AXUIElementSetAttributeValue(app, kAXFrontmostAttribute as CFString, kCFBooleanTrue)
+            _ = AXUIElementPerformAction(window, kAXRaiseAction as CFString)
+            lastAttempt = Date()
+        }
+        Thread.sleep(forTimeInterval: 0.02)
+    }
+    if !fast { Thread.sleep(forTimeInterval: 0.2) }
+}
+
+// Keyboard events go to the frontmost app. Stop rather than type into another app.
+func requireFrontmost() throws {
+    guard isChromeFrontmost() else {
+        throw NSError(domain: "Chrome lost focus before keyboard input", code: 15)
     }
 }
 
 func key(_ code: CGKeyCode, command: Bool = false, shift: Bool = false,
-         pause: TimeInterval = 0.1) {
+         pause: TimeInterval = 0.1) throws {
+    try requireFrontmost()
     var flags: CGEventFlags = []
     if command { flags.insert(.maskCommand) }
     if shift { flags.insert(.maskShift) }
@@ -127,13 +134,14 @@ func typeText(_ text: String) throws {
     ]
     for character in text {
         if let index = base.firstIndex(of: character) {
-            key(codes[index], pause: 0.035)
+            try key(codes[index], pause: 0.035)
             continue
         }
         if let index = shifted.firstIndex(of: character) {
-            key(codes[index], shift: true, pause: 0.035)
+            try key(codes[index], shift: true, pause: 0.035)
             continue
         }
+        try requireFrontmost()
         let units = Array(String(character).utf16)
         units.withUnsafeBufferPointer { buffer in
             guard let pointer = buffer.baseAddress else { return }
@@ -165,7 +173,7 @@ func pasteText(_ text: String) throws {
     guard board.setString(text, forType: .string) else {
         throw NSError(domain: "Could not write password to clipboard", code: 13)
     }
-    key(9, command: true) // Command-V
+    try key(9, command: true) // Command-V
     Thread.sleep(forTimeInterval: 0.1)
 }
 
@@ -237,6 +245,7 @@ func snapshot() throws {
 
 func navigate(_ destination: String) throws {
     try activate()
+    try key(37, command: true) // Command-L
     let board = NSPasteboard.general
     let saved = (board.pasteboardItems ?? []).map { item -> NSPasteboardItem in
         let copy = NSPasteboardItem()
@@ -245,16 +254,17 @@ func navigate(_ destination: String) throws {
         }
         return copy
     }
-    key(37, command: true) // Command-L
+    defer {
+        board.clearContents()
+        if !saved.isEmpty { _ = board.writeObjects(saved) }
+    }
     board.clearContents()
     guard board.setString(destination, forType: .string) else {
         throw NSError(domain: "Could not write URL to clipboard", code: 5)
     }
-    key(9, command: true) // Command-V
-    key(36) // Return
+    try key(9, command: true) // Command-V
+    try key(36) // Return
     Thread.sleep(forTimeInterval: 0.25)
-    board.clearContents()
-    if !saved.isEmpty { _ = board.writeObjects(saved) }
 }
 
 func element(at path: String) -> AXUIElement? {
@@ -327,7 +337,7 @@ do {
         guard isFocused(target) else {
             throw NSError(domain: "Browser input field did not receive focus", code: 12)
         }
-        key(0, command: true) // Command-A in the focused field
+        try key(0, command: true) // Command-A in the focused field
         let input = FileHandle.standardInput.readDataToEndOfFile()
         guard let text = String(data: input, encoding: .utf8) else { exit(7) }
         if arguments[1] == "type_paste" {
