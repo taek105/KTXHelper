@@ -9,6 +9,7 @@ from service.exceptions import (
     InvalidDateFormatError,
     LoginFailedError,
     RefreshButtonNotFoundError,
+    TrainNotFoundError,
 )
 from service.native_browser import (
     NativeChrome,
@@ -95,7 +96,7 @@ def _login_error(nodes, previous_texts):
 
 class KTX:
     def __init__(
-        self, dpt_stn, arr_stn, dpt_dt, dpt_tm, target_index,
+        self, dpt_stn, arr_stn, dpt_dt, dpt_tm, target_trains,
         reserve_waiting=False,
     ):
         from service.ktx import build_search_url
@@ -104,7 +105,7 @@ class KTX:
         self.arr_stn = arr_stn
         self.dpt_dt = dpt_dt
         self.dpt_tm = dpt_tm
-        self.target_index = target_index
+        self.target_trains = target_trains
         self.reserve_waiting = reserve_waiting
         self.browser = None
         self.search_url = build_search_url(dpt_stn, arr_stn, dpt_dt, dpt_tm)
@@ -295,29 +296,47 @@ class KTX:
         print("KTX 예약 대기 완료")
         return True
 
+    def _book_targets(self, nodes, rows):
+        by_train = {row["train"]: row for row in rows}
+        for train in self.target_trains:
+            row = by_train.get(train)
+            if row is None:
+                continue
+            if row["status"] == "예약가능" and self._book_ticket(row, before=nodes):
+                return True
+            if (self.reserve_waiting and row["status"] == "대기신청"
+                    and self._book_ticket(row, waiting=True, before=nodes)):
+                return True
+        return False
+
     def _check_result(self, nodes, rows):
         while not self.is_booked:
-            for index in self.target_index:
-                if not 1 <= index <= len(rows):
-                    continue
-                row = rows[index - 1]
-                if row["status"] == "예약가능":
-                    if self._book_ticket(row, before=nodes):
-                        return True
-                if self.reserve_waiting and row["status"] == "대기신청":
-                    if self._book_ticket(row, waiting=True, before=nodes):
-                        return True
+            if self._book_targets(nodes, rows):
+                return True
             nodes, rows = self._refresh_result()
         return True
+
+    def _missing_trains(self, rows):
+        found = {row["train"] for row in rows}
+        return [train for train in self.target_trains if train not in found]
 
     def run(self, login_id=None, login_psw=None):
         self._start_authenticated_session(login_id, login_psw)
         print("KTX를 조회합니다")
         print(f"출발역:{self.dpt_stn} , 도착역:{self.arr_stn}\n"
               f"날짜:{self.dpt_dt}, 시간: {self.dpt_tm}시 이후\n")
-        print(f"{', '.join(f'{i}번' for i in self.target_index)} KTX를 예매합니다.")
+        print(f"{', '.join(map(str, self.target_trains))}번 열차를 예매합니다.")
         print(f"예약 대기 사용: {self.reserve_waiting}")
         nodes, rows = self._open_search_page()
+        if self._missing_trains(rows):
+            time.sleep(1)  # The list may still be rendering.
+            nodes, rows = wait_for_results(self.browser, RESULT_WAIT_TIMEOUT)
+        missing = self._missing_trains(rows)
+        if missing:
+            raise TrainNotFoundError(
+                f"선택한 열차({', '.join(map(str, missing))})가 조회 결과에 없습니다. "
+                "스케줄을 다시 조회해주세요."
+            )
         return self._check_result(nodes, rows)
 
 

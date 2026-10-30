@@ -11,6 +11,10 @@ from service.exceptions import (
     KorailAccessBlockedError,
 )
 
+RUN_FORM = dict(
+    login_id=None, login_psw=None, from_station="서울", to_station="부산",
+    date="20261003", time="08", reserve=False, trains=[121],
+)
 SCHEDULE_FORM = dict(
     login_id=None, login_psw=None, date="20261003", time="08",
     from_station="서울", to_station="부산",
@@ -26,11 +30,15 @@ class BrowserWindowApiTest(unittest.TestCase):
     )
     def test_post_run_returns_conflict_for_closed_browser(self, _run_macro):
         with self.assertRaises(HTTPException) as raised:
-            srt_router.post_run(
-                login_id=None, login_psw=None, from_station="서울", to_station="부산",
-                date="20261003", time="08", reserve=False, seats=[1],
-            )
+            srt_router.post_run(**RUN_FORM)
         self.assertEqual(409, raised.exception.status_code)
+
+    @patch.object(srt_router, "run_macro_logic")
+    def test_post_run_rejects_requests_without_trains(self, run_macro):
+        with self.assertRaises(HTTPException) as raised:
+            srt_router.post_run(**{**RUN_FORM, "trains": []})
+        self.assertEqual(422, raised.exception.status_code)
+        run_macro.assert_not_called()
 
     @patch.object(
         srt_router,

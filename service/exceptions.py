@@ -33,3 +33,7 @@ class BrowserSetupError(RuntimeError):
 
 class BrowserControlError(RuntimeError):
     pass
+
+
+class TrainNotFoundError(Exception):
+    pass

@@ -17,6 +17,7 @@ from service.exceptions import (
     KorailAccessBlockedError,
     LoginFailedError,
     RefreshButtonNotFoundError,
+    TrainNotFoundError,
 )
 
 router = APIRouter()
@@ -24,6 +25,7 @@ router = APIRouter()
 # Failures with a known cause: (exception types, HTTP status, failure code).
 KNOWN_ERRORS = (
     (BrowserWindowClosedError, 409, "BROWSER_CLOSED"),
+    (TrainNotFoundError, 409, "TRAIN_NOT_FOUND"),
     (RefreshButtonNotFoundError, 503, "REFRESH_BUTTON_NOT_FOUND"),
     (KorailAccessBlockedError, 429, "KORAIL_ACCESS_BLOCKED"),
     (LoginFailedError, 401, "INVALID_LOGIN"),
@@ -63,8 +65,14 @@ def post_run(
     date: str = Form(...),
     time: str = Form(...),
     reserve: bool = Form(False),
-    seats: list[int] = Form(default_factory=list),  # noqa: B008
+    trains: list[int] = Form(default_factory=list),  # noqa: B008
 ) -> bool:
+    # A tab opened before an update can still send the old form fields.
+    if not trains:
+        raise HTTPException(
+            status_code=422,
+            detail="선택한 열차가 없습니다. 페이지를 새로고침한 뒤 스케줄을 다시 조회해주세요.",
+        )
     run_id = uuid4().hex
     run_context_token = set_run_id(run_id)
     started_at = perf_counter()
@@ -75,6 +83,7 @@ def post_run(
         departure_date=date,
         departure_time=time,
         reserve_requested=reserve,
+        target_trains=trains,
     )
     try:
         run_macro_logic(
@@ -84,7 +93,7 @@ def post_run(
             arr_stn=to_station,
             dpt_dt=date,
             dpt_tm=time,
-            target=seats,
+            target=trains,
             want_reserve=reserve,
         )
     except Exception as exc:

@@ -9,6 +9,7 @@ from service.exceptions import (
     BrowserSetupError,
     BrowserWindowClosedError,
     KorailAccessBlockedError,
+    TrainNotFoundError,
 )
 from service.ktx_native import KTX
 from service.native_browser import (
@@ -29,6 +30,20 @@ def result_nodes(seat_title="매진"):
         {"path": row + ".1", "role": "AXLink", "title": seat_title, "value": ""},
         {"path": row + ".2", "role": "AXLink", "title": "매진", "value": ""},
     ]
+
+
+def train_nodes(*trains):
+    """Search result rows for (train number, general seat title) pairs."""
+    nodes = []
+    for index, (train, seat_title) in enumerate(trains):
+        row = f"root.0.1.{index}"
+        nodes += [
+            {"path": row + ".0.1", "role": "AXStaticText", "title": "", "value": str(train)},
+            {"path": row + ".0.3", "role": "AXHeading",
+             "title": f"서울 → 부산(0{8 + index}:12 ~ 11:33)", "value": "3"},
+            {"path": row + ".1", "role": "AXLink", "title": seat_title, "value": ""},
+        ]
+    return nodes
 
 
 def login_nodes():
@@ -137,6 +152,29 @@ class KtxNativeTest(unittest.TestCase):
             self.assertTrue(helper._book_ticket(row, before=nodes))
         helper.browser.snapshot.assert_not_called()
         helper.browser.click.assert_called_once_with(row["seat"], fast=True)
+
+    def test_targets_selected_train_number_not_list_position(self):
+        nodes = train_nodes((101, "예매"), (121, "예매"))
+        helper = KTX("서울", "부산", "20261003", "08", [121])
+        with patch.object(helper, "_book_ticket", return_value=True) as book:
+            self.assertTrue(helper._check_result(nodes, schedule_rows(nodes)))
+        book.assert_called_once()
+        self.assertEqual(121, book.call_args.args[0]["train"])
+
+    @patch("service.ktx_native.time.sleep")
+    @patch("service.ktx_native.wait_for_results")
+    def test_run_stops_when_selected_train_is_not_listed(self, wait_for_results, _sleep):
+        nodes = train_nodes((101, "매진"))
+        wait_for_results.return_value = (nodes, schedule_rows(nodes))
+        helper = KTX("서울", "부산", "20261003", "08", [121])
+        helper.browser = MagicMock()
+        with patch.object(helper, "_start_authenticated_session"), \
+                patch.object(helper, "_open_search_page", return_value=(nodes, schedule_rows(nodes))), \
+                patch.object(helper, "_check_result") as check:
+            with self.assertRaises(TrainNotFoundError) as raised:
+                helper.run("member", "password")
+        self.assertIn("121", str(raised.exception))
+        check.assert_not_called()
 
     @patch("service.native_browser._bridge_command", return_value=["bridge"])
     @patch("service.native_browser.subprocess.run")

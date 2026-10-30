@@ -60,7 +60,7 @@ class EventLoggingTest(unittest.IsolatedAsyncioTestCase):
                 date="20260905",
                 time="0900",
                 reserve=True,
-                seats=[1],
+                trains=[121],
             )
             return JSONResponse(result)
 
