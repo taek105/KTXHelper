@@ -48,6 +48,13 @@ func firstWindow() -> AXUIElement? {
     return (raw as? [AXUIElement])?.first
 }
 
+func isChromeFrontmost() -> Bool {
+    var raw: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(app, kAXFrontmostAttribute as CFString, &raw) == .success,
+          let raw, CFGetTypeID(raw) == CFBooleanGetTypeID() else { return false }
+    return CFBooleanGetValue((raw as! CFBoolean))
+}
+
 func activate(fast: Bool = false) throws {
     guard let window = firstWindow() else { throw NSError(domain: "Chrome window closed", code: 4) }
     _ = runningApp.activate(options: [])
@@ -55,7 +62,7 @@ func activate(fast: Bool = false) throws {
     if fast {
         let deadline = Date().addingTimeInterval(1.5)
         var lastAttempt = Date()
-        while NSWorkspace.shared.frontmostApplication?.processIdentifier != processID {
+        while !isChromeFrontmost() {
             guard Date() < deadline else {
                 throw NSError(domain: "Chrome window did not become active", code: 11)
             }
