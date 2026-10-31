@@ -29,6 +29,8 @@ RESERVATION_DETAIL_PATH = "/ticket/reservation/detail"
 LOGIN_WAIT_TIMEOUT = 60
 RESULT_WAIT_TIMEOUT = 120
 MAX_BOOKING_FAILURES = 3
+NOTICE_TITLE = "이용안내"
+NOTICE_CLICK_INTERVAL = 1
 
 
 def _find_button(nodes, title, *, excluded_paths=(), exact=False, roles=("AXButton",)):
@@ -41,6 +43,28 @@ def _find_button(nodes, title, *, excluded_paths=(), exact=False, roles=("AXButt
     ]
     exact = [node for node in candidates if node["title"] == title]
     return (exact or candidates or [None])[-1]
+
+
+def _notice(nodes):
+    """Return the 확인 button and message of an open 이용안내 notice."""
+    # Korail hides the page behind an open dialog, so the web area then holds
+    # only the dialog. A dialog with another button, such as the one that
+    # leaves for the SR site, needs the user's answer.
+    web_area = next((node["path"] for node in nodes if node["role"] == "AXWebArea"), None)
+    if web_area is None:
+        return None
+    page = [node for node in nodes if node["path"].startswith(web_area + ".")]
+    buttons = [node for node in page
+               if node["role"] == "AXButton" and node.get("enabled") != "0"]
+    if len(buttons) != 1 or buttons[0]["title"] != "확인":
+        return None
+    if not any(node["role"] == "AXHeading" and NOTICE_TITLE in node["title"] for node in page):
+        return None
+    message = " ".join(
+        node["value"] for node in page
+        if node["role"] == "AXStaticText" and node["value"] not in (NOTICE_TITLE, "확인")
+    )
+    return buttons[0], message
 
 
 def _login_controls(nodes):
@@ -229,6 +253,7 @@ class KTX:
         exact=False, roles=("AXButton",),
     ):
         deadline = time.monotonic() + timeout
+        next_notice_click = 0
         while time.monotonic() < deadline:
             nodes = self.browser.snapshot()
             page_state(nodes)
@@ -240,6 +265,19 @@ class KTX:
             )
             if button:
                 return button
+            # Some trains show a notice that holds the next step until 확인.
+            # A snapshot right after the click can still show the closed
+            # notice, and clicking it again would hit the page behind it.
+            notice = _notice(nodes)
+            if notice and time.monotonic() >= next_notice_click:
+                notice_button, message = notice
+                try:
+                    self.browser.click(notice_button, fast=True)
+                except BrowserControlError as exc:
+                    print(f"안내창 확인 중 오류, 다시 시도합니다: {exc}")
+                else:
+                    next_notice_click = time.monotonic() + NOTICE_CLICK_INTERVAL
+                    print(f"안내창 확인: {message}")
             time.sleep(random.uniform(0.05, 0.1))
         raise TimeoutError(f"'{title}' 버튼을 찾지 못했습니다.")
 

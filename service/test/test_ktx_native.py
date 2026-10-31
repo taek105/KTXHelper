@@ -1,6 +1,6 @@
 import subprocess
 import unittest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 from urllib.parse import parse_qs, urlparse
 
 from service import ktx
@@ -12,14 +12,17 @@ from service.exceptions import (
     KorailAccessBlockedError,
     TrainNotFoundError,
 )
-from service.ktx_native import KTX, MAX_BOOKING_FAILURES
+from service.ktx_native import KTX, MAX_BOOKING_FAILURES, _notice
 from service.native_browser import (
     NativeChrome,
+    StaleBrowserControlError,
     _bridge_command,
     logged_in,
     page_state,
     schedule_rows,
 )
+
+WEB_AREA = {"path": "root.0.1", "role": "AXWebArea", "title": "", "value": ""}
 
 
 def result_nodes(seat_title="매진"):
@@ -50,6 +53,30 @@ def train_nodes(*trains):
 def page_at(url):
     return [{"path": "root.0.0", "role": "AXTextField",
              "title": "주소창 및 검색창", "value": url}]
+
+
+def selected_page(nodes, title):
+    """The result page after a train is selected, with its bottom bar button."""
+    button = {"path": "root.0.1.8.0", "role": "AXButton", "title": title, "value": ""}
+    return page_at("korail.com/ticket/search/list") + [WEB_AREA] + nodes + [button], button
+
+
+def dialog_nodes(*buttons, title="이용안내"):
+    """An open Korail dialog. The site hides the page behind it."""
+    layer = "root.0.1.9.0"
+    nodes = page_at("korail.com/ticket/search/list") + [
+        WEB_AREA,
+        {"path": layer + ".0", "role": "AXHeading", "title": title, "value": "1"},
+        {"path": layer + ".0.0", "role": "AXStaticText", "title": "", "value": title},
+        {"path": layer + ".1", "role": "AXStaticText", "title": "",
+         "value": "선택하신 열차는 2개 편성을 연결하여 운행하는 열차입니다."},
+    ]
+    nodes += [
+        {"path": f"{layer}.{index + 2}", "role": "AXButton", "title": name, "value": ""}
+        for index, name in enumerate(buttons)
+    ]
+    # Chrome's own buttons come after the page.
+    return nodes + [{"path": "root.1", "role": "AXButton", "title": "닫기", "value": ""}]
 
 
 def login_nodes():
@@ -225,6 +252,79 @@ class KtxNativeTest(unittest.TestCase):
             with self.assertRaises(BookingUnconfirmedError):
                 helper._check_result(nodes, schedule_rows(nodes))
         self.assertEqual(2, helper.browser.click.call_count)
+
+    def test_only_a_notice_with_one_button_is_confirmed(self):
+        button, message = _notice(dialog_nodes("확인"))
+        self.assertEqual("확인", button["title"])
+        self.assertEqual("선택하신 열차는 2개 편성을 연결하여 운행하는 열차입니다.", message)
+        # Choices are the user's, for example leaving for the SR site.
+        self.assertIsNone(_notice(dialog_nodes("취소", "확인")))
+        self.assertIsNone(_notice(dialog_nodes("아니오", "네")))
+        # Errors and the macro warning stay on screen.
+        self.assertIsNone(_notice(dialog_nodes("확인", title="안내 메시지")))
+        # A visible page has other buttons next to any 확인.
+        page = dialog_nodes("확인") + [
+            {"path": "root.0.1.0.0", "role": "AXButton", "title": "조회", "value": ""},
+        ]
+        self.assertIsNone(_notice(page))
+
+    @patch("service.ktx_native.time.sleep")
+    def test_seat_notice_is_confirmed_once_before_booking(self, _sleep):
+        nodes = train_nodes((121, "예매"))
+        row = schedule_rows(nodes)[0]
+        helper = KTX("서울", "부산", "20261003", "08", [121])
+        helper.browser = MagicMock()
+        notice = dialog_nodes("확인")
+        page, booking = selected_page(nodes, "예매")
+        # The snapshot right after the click can still show the closed notice.
+        helper.browser.snapshot.side_effect = [notice, notice, page]
+        with patch.object(helper, "_wait_for_reservation_detail") as detail:
+            self.assertTrue(helper._book_ticket(row, before=nodes))
+        self.assertEqual(
+            [call(row["seat"], fast=True), call(_notice(notice)[0], fast=True),
+             call(booking, fast=True)],
+            helper.browser.click.call_args_list,
+        )
+        detail.assert_called_once()
+
+    @patch("service.ktx_native.time.sleep")
+    def test_failed_notice_click_is_tried_again(self, _sleep):
+        nodes = train_nodes((121, "예매"))
+        row = schedule_rows(nodes)[0]
+        helper = KTX("서울", "부산", "20261003", "08", [121])
+        helper.browser = MagicMock()
+        notice = dialog_nodes("확인")
+        page, booking = selected_page(nodes, "예매")
+        helper.browser.snapshot.side_effect = [notice, notice, page]
+        helper.browser.click.side_effect = [None, StaleBrowserControlError("redrawn"), None, None]
+        with patch.object(helper, "_wait_for_reservation_detail"):
+            self.assertTrue(helper._book_ticket(row, before=nodes))
+        confirm = _notice(notice)[0]
+        self.assertEqual(
+            [call(row["seat"], fast=True), call(confirm, fast=True),
+             call(confirm, fast=True), call(booking, fast=True)],
+            helper.browser.click.call_args_list,
+        )
+
+    @patch("service.ktx_native.time.sleep")
+    def test_waiting_list_notice_is_confirmed_before_final_request(self, _sleep):
+        nodes = train_nodes((121, "예약대기"))
+        row = schedule_rows(nodes)[0]
+        helper = KTX("서울", "부산", "20261003", "08", [121], reserve_waiting=True)
+        helper.browser = MagicMock()
+        page, waiting = selected_page(nodes, "예약대기신청")
+        notice = dialog_nodes("확인")
+        form = dialog_nodes("취소", "대기신청", title="예약대기 신청")
+        helper.browser.snapshot.side_effect = [page, notice, form]
+
+        self.assertTrue(helper._book_ticket(row, waiting=True, before=nodes))
+
+        apply = next(node for node in form if node["title"] == "대기신청")
+        self.assertEqual(
+            [call(row["seat"], fast=True), call(waiting, fast=True),
+             call(_notice(notice)[0], fast=True), call(apply, fast=True)],
+            helper.browser.click.call_args_list,
+        )
 
     @patch("service.ktx_native.time.sleep")
     def test_detail_wait_survives_a_transient_bridge_error(self, _sleep):
