@@ -310,17 +310,23 @@ class KTX:
             print("KTX 예약 완료")
             return True
         self.browser.click(button, fast=True)
-        if waiting:
-            # Match the final "대기신청" button exactly so the previous
-            # "예약대기신청" button cannot be selected again.
-            confirmation = self._wait_for_button(
-                "대기신청", timeout=20, exact=True, roles=("AXButton", "AXLink"),
-            )
-            self.browser.click(confirmation, fast=True)
-            print("KTX 예약 대기 완료")
-            return True
         # The booking request may already be sent. Retrying could book twice,
         # so a failure from here asks the user to check the reservation list.
+        if waiting:
+            try:
+                # Match the final "대기신청" button exactly so the previous
+                # "예약대기신청" button cannot be selected again.
+                confirmation = self._wait_for_button(
+                    "대기신청", timeout=RESULT_WAIT_TIMEOUT, exact=True,
+                    roles=("AXButton", "AXLink"),
+                )
+                self.browser.click(confirmation, fast=True)
+            except (BrowserControlError, TimeoutError) as exc:
+                raise BookingUnconfirmedError(
+                    "예약대기신청 버튼을 누른 뒤 결과를 확인하지 못했습니다. 코레일 예약 내역을 확인해주세요."
+                ) from exc
+            print("KTX 예약 대기 완료")
+            return True
         try:
             self._wait_for_reservation_detail()
         except TimeoutError as exc:

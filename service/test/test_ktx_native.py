@@ -214,7 +214,7 @@ class KtxNativeTest(unittest.TestCase):
         helper.browser = MagicMock()
         helper.browser.snapshot.return_value = page_at("korail.com/ticket/waiting")
         with patch.object(helper, "_book_ticket",
-                          side_effect=[TimeoutError("'대기신청' 버튼을 찾지 못했습니다."), True]), \
+                          side_effect=[TimeoutError("'예약대기신청' 버튼을 찾지 못했습니다."), True]), \
                 patch.object(helper, "_open_search_page", return_value=(nodes, rows)) as reopen:
             self.assertTrue(helper._check_result(nodes, rows))
         reopen.assert_called_once()
@@ -249,6 +249,17 @@ class KtxNativeTest(unittest.TestCase):
         with patch.object(helper, "_wait_for_button", return_value=button), \
                 patch.object(helper, "_wait_for_reservation_detail",
                              side_effect=TimeoutError("예약 상세 화면으로 이동하지 못했습니다.")):
+            with self.assertRaises(BookingUnconfirmedError):
+                helper._check_result(nodes, schedule_rows(nodes))
+        self.assertEqual(2, helper.browser.click.call_count)
+
+    def test_failure_after_waiting_request_is_not_retried(self):
+        nodes = train_nodes((121, "예약대기"))
+        helper = KTX("서울", "부산", "20261003", "08", [121], reserve_waiting=True)
+        helper.browser = MagicMock()
+        button = {"path": "root.9", "role": "AXButton", "title": "예약대기신청", "value": ""}
+        with patch.object(helper, "_wait_for_button",
+                          side_effect=[button, TimeoutError("'대기신청' 버튼을 찾지 못했습니다.")]):
             with self.assertRaises(BookingUnconfirmedError):
                 helper._check_result(nodes, schedule_rows(nodes))
         self.assertEqual(2, helper.browser.click.call_count)
