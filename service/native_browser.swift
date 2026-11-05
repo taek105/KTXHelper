@@ -57,6 +57,16 @@ func firstWindow() -> AXUIElement? {
     return (raw as? [AXUIElement])?.first
 }
 
+// Chrome stops updating a minimized page, and a page reloaded while minimized
+// leaves the accessibility tree. Restoring the window does not activate Chrome.
+func restoreIfMinimized(_ window: AXUIElement) {
+    var raw: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(window, kAXMinimizedAttribute as CFString, &raw) == .success,
+          let raw, CFGetTypeID(raw) == CFBooleanGetTypeID(),
+          CFBooleanGetValue(raw as! CFBoolean) else { return }
+    _ = AXUIElementSetAttributeValue(window, kAXMinimizedAttribute as CFString, kCFBooleanFalse)
+}
+
 func isChromeFrontmost() -> Bool {
     var raw: CFTypeRef?
     guard AXUIElementCopyAttributeValue(app, kAXFrontmostAttribute as CFString, &raw) == .success,
@@ -227,6 +237,7 @@ let snapshotAttributes = [
 
 func snapshot() throws {
     guard let window = firstWindow() else { throw NSError(domain: "Chrome window closed", code: 4) }
+    restoreIfMinimized(window)
     var nodes: [[String: Any]] = []
     func walk(_ element: AXUIElement, _ path: String, _ depth: Int) {
         guard depth < 40, nodes.count < 4000 else { return }
@@ -289,6 +300,7 @@ func element(at path: String) -> AXUIElement? {
 
 func refreshWithoutFocus() throws {
     guard let window = firstWindow() else { throw NSError(domain: "Chrome window closed", code: 4) }
+    restoreIfMinimized(window)
     func refreshButton(in element: AXUIElement, inToolbar: Bool, depth: Int) -> AXUIElement? {
         guard depth < 12 else { return nil }
         let role = attribute(element, kAXRoleAttribute)
