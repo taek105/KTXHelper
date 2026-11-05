@@ -387,15 +387,15 @@ class KTX:
                 if self._book_targets(nodes, rows):
                     return True
                 failures = 0
+                nodes, rows = self._refresh_result()
             except (BrowserControlError, TimeoutError) as exc:
-                # One missed click must not end a long wait.
+                # One missed click or a result list that never finishes
+                # loading must not end a long wait.
                 failures += 1
                 if failures >= MAX_BOOKING_FAILURES:
                     raise
-                print(f"예매 시도 실패 {failures}회, 다시 조회합니다: {exc}")
+                print(f"조회·예매 실패 {failures}회, 다시 조회합니다: {exc}")
                 nodes = rows = None
-                continue
-            nodes, rows = self._refresh_result()
 
     def _missing_trains(self, rows):
         found = {row["train"] for row in rows}

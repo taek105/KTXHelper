@@ -231,6 +231,30 @@ class KtxNativeTest(unittest.TestCase):
                 helper._check_result(nodes, rows)
         self.assertEqual(MAX_BOOKING_FAILURES, book.call_count)
 
+    def test_stuck_result_list_is_loaded_again(self):
+        nodes = train_nodes((121, "매진"))
+        rows = schedule_rows(nodes)
+        helper = KTX("서울", "부산", "20261003", "08", [121])
+        helper.browser = MagicMock()
+        helper.browser.snapshot.return_value = page_at("korail.com/ticket/search/list")
+        stuck = TimeoutError("코레일 열차 조회 결과를 기다리다 시간이 초과되었습니다.")
+        with patch.object(helper, "_book_targets", side_effect=[False, True]), \
+                patch.object(helper, "_refresh_result", side_effect=[stuck, (nodes, rows)]) as refresh:
+            self.assertTrue(helper._check_result(nodes, rows))
+        self.assertEqual(2, refresh.call_count)
+
+    def test_repeated_stuck_result_lists_end_the_run(self):
+        nodes = train_nodes((121, "매진"))
+        rows = schedule_rows(nodes)
+        helper = KTX("서울", "부산", "20261003", "08", [121])
+        helper.browser = MagicMock()
+        helper.browser.snapshot.return_value = page_at("korail.com/ticket/search/list")
+        stuck = TimeoutError("코레일 열차 조회 결과를 기다리다 시간이 초과되었습니다.")
+        with patch.object(helper, "_refresh_result", side_effect=stuck) as refresh:
+            with self.assertRaises(TimeoutError):
+                helper._check_result(nodes, rows)
+        self.assertEqual(MAX_BOOKING_FAILURES, refresh.call_count)
+
     def test_reservation_page_after_failed_attempt_counts_as_booked(self):
         nodes = train_nodes((121, "예매"))
         helper = KTX("서울", "부산", "20261003", "08", [121])
