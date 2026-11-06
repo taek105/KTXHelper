@@ -105,6 +105,7 @@ class KtxNativeTest(unittest.TestCase):
         self.assertEqual("예약가능", schedule_rows(result_nodes("예매"))[0]["status"])
         self.assertEqual("예약가능", schedule_rows(result_nodes("일반실 54,000원 5%적립"))[0]["status"])
         self.assertEqual("대기신청", schedule_rows(result_nodes("예약대기"))[0]["status"])
+        self.assertEqual("매진", schedule_rows(result_nodes("입석 + 좌석 예약대기"))[0]["status"])
         self.assertEqual(121, schedule_rows(result_nodes())[0]["train"])
 
     def test_login_requires_logout_link(self):

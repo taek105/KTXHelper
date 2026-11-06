@@ -218,7 +218,11 @@ def schedule_rows(nodes):
         if not number_node["value"].isdigit():
             continue
         seat_title = seat_node["title"].strip()
-        if "예약대기" in seat_title or "대기신청" in seat_title:
+        # "입석 + 좌석" and its waiting list ("입석 + 좌석 예약대기") are
+        # not supported, so they count as sold out.
+        if "입석" in seat_title:
+            status = "매진"
+        elif "예약대기" in seat_title or "대기신청" in seat_title:
             status = "대기신청"
         elif "매진" in seat_title or "없음" in seat_title:
             status = "매진"
