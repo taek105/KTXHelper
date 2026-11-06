@@ -160,6 +160,9 @@ class NativeChrome:
     def click(self, node, *, fast=False):
         self._call("click_fast" if fast else "click", node["path"], node["role"], node["title"])
 
+    def press(self, node):
+        self._call("press", node["path"], node["role"], node["title"])
+
     def type_into(self, node, value, *, paste=False):
         self._call(
             "type_paste" if paste else "type",
