@@ -79,6 +79,17 @@ def dialog_nodes(*buttons, title="이용안내"):
     return nodes + [{"path": "root.1", "role": "AXButton", "title": "닫기", "value": ""}]
 
 
+def waiting_form(consent="0"):
+    """The 예약대기 신청 form with its required and optional checkboxes."""
+    layer = "root.0.1.9.0"
+    return dialog_nodes("취소", "대기신청", title="예약대기 신청") + [
+        {"path": layer + ".5", "role": "AXCheckBox",
+         "title": "개인정보 수집 및 이용 동의", "value": consent},
+        {"path": layer + ".6", "role": "AXCheckBox",
+         "title": "일반실에 좌석이 없는 경우, 특실(우등실)로 예약하기", "value": "0"},
+    ]
+
+
 def login_nodes():
     form = "root.0.1.0"
     return [
@@ -105,6 +116,7 @@ class KtxNativeTest(unittest.TestCase):
         self.assertEqual("예약가능", schedule_rows(result_nodes("예매"))[0]["status"])
         self.assertEqual("예약가능", schedule_rows(result_nodes("일반실 54,000원 5%적립"))[0]["status"])
         self.assertEqual("대기신청", schedule_rows(result_nodes("예약대기"))[0]["status"])
+        self.assertEqual("매진", schedule_rows(result_nodes("입석 + 좌석 예약대기"))[0]["status"])
         self.assertEqual(121, schedule_rows(result_nodes())[0]["train"])
 
     def test_login_requires_logout_link(self):
@@ -349,8 +361,8 @@ class KtxNativeTest(unittest.TestCase):
         helper.browser = MagicMock()
         page, waiting = selected_page(nodes, "예약대기신청")
         notice = dialog_nodes("확인")
-        form = dialog_nodes("취소", "대기신청", title="예약대기 신청")
-        helper.browser.snapshot.side_effect = [page, notice, form]
+        form = waiting_form(consent="1")
+        helper.browser.snapshot.side_effect = [page, notice, form, form]
 
         self.assertTrue(helper._book_ticket(row, waiting=True, before=nodes))
 
@@ -358,6 +370,44 @@ class KtxNativeTest(unittest.TestCase):
         self.assertEqual(
             [call(row["seat"], fast=True), call(waiting, fast=True),
              call(_notice(notice)[0], fast=True), call(apply, fast=True)],
+            helper.browser.click.call_args_list,
+        )
+
+    @patch("service.ktx_native.time.sleep")
+    def test_privacy_consent_is_checked_before_waiting_request(self, _sleep):
+        nodes = train_nodes((121, "예약대기"))
+        row = schedule_rows(nodes)[0]
+        helper = KTX("서울", "부산", "20261003", "08", [121], reserve_waiting=True)
+        helper.browser = MagicMock()
+        page, waiting = selected_page(nodes, "예약대기신청")
+        form = waiting_form()
+        helper.browser.snapshot.side_effect = [page, form, form, waiting_form(consent="1")]
+
+        self.assertTrue(helper._book_ticket(row, waiting=True, before=nodes))
+
+        # Only the required consent. The 특실 option is left as it is.
+        consent = next(node for node in form if node["role"] == "AXCheckBox")
+        helper.browser.press.assert_called_once_with(consent)
+        apply = next(node for node in form if node["title"] == "대기신청")
+        self.assertEqual(call(apply, fast=True), helper.browser.click.call_args)
+
+    @patch("service.ktx_native.CONSENT_TIMEOUT", 0.05)
+    @patch("service.ktx_native.time.sleep")
+    def test_waiting_request_is_not_sent_without_privacy_consent(self, _sleep):
+        nodes = train_nodes((121, "예약대기"))
+        row = schedule_rows(nodes)[0]
+        helper = KTX("서울", "부산", "20261003", "08", [121], reserve_waiting=True)
+        helper.browser = MagicMock()
+        page, waiting = selected_page(nodes, "예약대기신청")
+        form = waiting_form()
+        snapshots = iter([page, form])
+        helper.browser.snapshot.side_effect = lambda: next(snapshots, form)
+
+        with self.assertRaises(BookingUnconfirmedError):
+            helper._book_ticket(row, waiting=True, before=nodes)
+
+        self.assertEqual(
+            [call(row["seat"], fast=True), call(waiting, fast=True)],
             helper.browser.click.call_args_list,
         )
 

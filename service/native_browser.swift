@@ -7,7 +7,7 @@ import Foundation
 //actions are macOS mouse/keyboard events or accessibility presses.
 let arguments = CommandLine.arguments
 guard arguments.count >= 3, let processID = Int32(arguments[2]) else {
-    fputs("usage: native_browser <snapshot|navigate|refresh|click|type|close> <pid> [argument]\n", stderr)
+    fputs("usage: native_browser <snapshot|navigate|refresh|click|press|type|close> <pid> [argument]\n", stderr)
     exit(2)
 }
 guard AXIsProcessTrusted() else {
@@ -341,6 +341,16 @@ do {
         let fast = arguments[1] == "click_fast"
         try activate(fast: fast)
         try clickElement(target, fast: fast)
+    case "press":
+        // For controls that are clipped out of sight, so a mouse click at
+        // their position misses them. Chrome performs the control's click.
+        guard arguments.count > 5, let target = element(at: arguments[3]) else { exit(5) }
+        guard attribute(target, kAXRoleAttribute) == arguments[4],
+              attribute(target, kAXTitleAttribute) == arguments[5] else { exit(6) }
+        let result = AXUIElementPerformAction(target, kAXPressAction as CFString)
+        guard result == .success else {
+            throw NSError(domain: "Browser control press failed", code: Int(result.rawValue))
+        }
     case "type", "type_paste":
         guard arguments.count > 5, let target = element(at: arguments[3]) else { exit(5) }
         let role = attribute(target, kAXRoleAttribute)

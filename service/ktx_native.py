@@ -31,6 +31,8 @@ RESULT_WAIT_TIMEOUT = 120
 MAX_BOOKING_FAILURES = 3
 NOTICE_TITLE = "이용안내"
 NOTICE_CLICK_INTERVAL = 1
+PRIVACY_CONSENT = "개인정보 수집 및 이용 동의"
+CONSENT_TIMEOUT = 10
 
 
 def _find_button(nodes, title, *, excluded_paths=(), exact=False, roles=("AXButton",)):
@@ -281,6 +283,38 @@ class KTX:
             time.sleep(random.uniform(0.05, 0.1))
         raise TimeoutError(f"'{title}' 버튼을 찾지 못했습니다.")
 
+    def _check_privacy_consent(self):
+        """Check the consent on the waiting form. Without it Korail only shows
+        an alert and sends nothing."""
+        deadline = time.monotonic() + CONSENT_TIMEOUT
+        next_press = 0
+        while time.monotonic() < deadline:
+            nodes = self.browser.snapshot()
+            page_state(nodes)
+            consent = next(
+                (node for node in nodes
+                 if node["role"] == "AXCheckBox" and PRIVACY_CONSENT in node["title"]),
+                None,
+            )
+            if consent and consent["value"] == "1":
+                return
+            # The checkbox is clipped out of sight, so a mouse click misses it.
+            # Wait a second before pressing again so a slow redraw is not
+            # toggled back.
+            if consent and time.monotonic() >= next_press:
+                try:
+                    self.browser.press(consent)
+                except BrowserControlError as exc:
+                    print(f"개인정보 동의 체크 중 오류, 다시 시도합니다: {exc}")
+                else:
+                    next_press = time.monotonic() + 1
+                    print(f"{PRIVACY_CONSENT} 체크")
+            time.sleep(random.uniform(0.05, 0.1))
+        raise BookingUnconfirmedError(
+            f"'{PRIVACY_CONSENT}'를 체크하지 못해 예약대기를 신청하지 못했습니다. "
+            "열린 Chrome 창에서 직접 신청해주세요."
+        )
+
     def _book_ticket(self, row, waiting=False, before=None):
         if before is None:
             before = self.browser.snapshot()
@@ -320,6 +354,7 @@ class KTX:
                     "대기신청", timeout=RESULT_WAIT_TIMEOUT, exact=True,
                     roles=("AXButton", "AXLink"),
                 )
+                self._check_privacy_consent()
                 self.browser.click(confirmation, fast=True)
             except (BrowserControlError, TimeoutError) as exc:
                 raise BookingUnconfirmedError(
